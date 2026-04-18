@@ -1,0 +1,235 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FFC IT Portal · Workflow & Approvals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<!-- ============ BOOT SPLASH (shows briefly while we check auth) ============ -->
+<div id="bootSplash" style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#fbfcf7;z-index:9999;flex-direction:column;font-family:Inter,sans-serif">
+  <div style="text-align:center;max-width:400px;padding:20px">
+    <div id="bootSpinner" style="width:54px;height:54px;margin:0 auto 16px;border:3px solid #e3ebd8;border-top-color:#5BA829;border-radius:50%;animation:spin 0.7s linear infinite"></div>
+    <div id="bootMessage" style="font-size:13px;color:#7a8775;letter-spacing:.08em">LOADING FFC IT PORTAL</div>
+    <div id="bootStatus" style="font-size:11px;color:#a0a99a;margin-top:10px;font-family:monospace"></div>
+    <div id="bootEscape" style="display:none;margin-top:24px">
+      <button onclick="document.getElementById('bootSplash').style.display='none';document.getElementById('loginScreen').style.display='grid';" style="padding:8px 16px;background:#3D7A18;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer">Continue to Login</button>
+      <div style="margin-top:10px;font-size:11px;color:#a0a99a">Open browser Console (F12) and check for errors</div>
+    </div>
+  </div>
+</div>
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+
+<!-- Visible failsafe: 10 seconds in, show escape button -->
+<script>
+  window.__BOOT_START = Date.now();
+  setTimeout(function() {
+    var esc = document.getElementById('bootEscape');
+    var msg = document.getElementById('bootMessage');
+    var spin = document.getElementById('bootSpinner');
+    if (esc && document.getElementById('bootSplash').style.display !== 'none') {
+      if (msg) msg.textContent = 'SOMETHING IS TAKING LONGER THAN EXPECTED';
+      if (spin) spin.style.borderTopColor = '#c13b3b';
+      esc.style.display = 'block';
+    }
+  }, 6000);
+  // Update status messages so user knows something's happening
+  window.__bootStatus = function(t) {
+    var el = document.getElementById('bootStatus');
+    if (el) el.textContent = t;
+  };
+  window.__bootStatus('Loading scripts…');
+
+  // Capture any errors that happen during module load
+  window.addEventListener('error', function(e) {
+    console.error('[FFC] Runtime error caught:', e.message, e.filename, e.lineno);
+    window.__bootStatus('Error: ' + e.message);
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    console.error('[FFC] Unhandled promise rejection:', e.reason);
+    window.__bootStatus('Promise error: ' + (e.reason?.message || e.reason));
+  });
+</script>
+
+<!-- ============ LOGIN ============ -->
+<div id="loginScreen" class="login-shell" style="display:none">
+  <div class="login-art">
+    <div class="brand-mark">
+      <div class="brand-hex">FFC</div>
+      <div class="brand-text">Fresh Fruits Company<small>IT Operations Portal</small></div>
+    </div>
+    <div class="login-hero">
+      <h1>Requests, <em>governed</em>.<br/>Approvals, <em>traceable</em>.</h1>
+      <p>Enterprise workflow for change, SOPs, leave, overtime and comp-off — multi-level approvals, audit trail, role-based access.</p>
+    </div>
+    <div class="login-foot">
+      <span>SINCE 1979 · UAE</span>
+      <span id="dateStamp"></span>
+    </div>
+  </div>
+  <div class="login-form-wrap">
+    <div class="login-form">
+      <h2>Sign in</h2>
+      <p class="sub">Use your FFC IT credentials.</p>
+      <div class="field">
+        <label for="loginEmail">Email</label>
+        <input id="loginEmail" type="email" placeholder="you@ffc.ae" autocomplete="email" />
+      </div>
+      <div class="field">
+        <label for="loginPassword">Password</label>
+        <input id="loginPassword" type="password" placeholder="••••••••" autocomplete="current-password" />
+      </div>
+      <button class="btn" id="btnLogin">Sign in →</button>
+      <div id="loginError" class="login-error"></div>
+      <div class="login-help">
+        Forgot password? Contact IT.<br>
+        First time? Account creation is handled by the IT admin.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" class="app">
+  <aside class="sidebar">
+    <div class="side-brand">
+      <div class="brand-hex">FFC</div>
+      <div class="brand-text">IT Portal<small>v2.0</small></div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-group">
+        <h5>Workspace</h5>
+        <button class="nav-item" data-view="dashboard">◆ Dashboard</button>
+        <button class="nav-item" data-view="my-requests">▤ My Requests</button>
+        <button class="nav-item" data-view="approvals">⚑ My Approvals <span class="badge" id="approvalBadge">0</span></button>
+        <button class="nav-item" data-view="notifications">◇ Notifications <span class="badge" id="notifBadge">0</span></button>
+      </div>
+
+      <div class="nav-group">
+        <h5>New Request</h5>
+        <button class="nav-item" data-view="new-change">+ Change Request</button>
+        <button class="nav-item" data-view="new-sop">+ SOP</button>
+        <button class="nav-item" data-view="new-leave">+ Leave</button>
+        <button class="nav-item" data-view="new-overtime">+ Overtime</button>
+        <button class="nav-item" data-view="new-comp">+ Comp Off</button>
+      </div>
+
+      <div class="nav-group">
+        <h5>Governance</h5>
+        <button class="nav-item" data-view="new-onboarding">+ Onboarding</button>
+        <button class="nav-item" data-view="new-offboarding">+ Offboarding</button>
+        <button class="nav-item" data-view="new-access">+ Access Request</button>
+        <button class="nav-item" data-view="new-handover">+ Asset Handover</button>
+        <button class="nav-item" data-view="onb-tasks">☰ My Onb. Tasks</button>
+        <button class="nav-item" data-view="assets-registry">⬡ Asset Registry</button>
+        <button class="nav-item" data-view="licenses">§ License Tracker</button>
+        <button class="nav-item" data-view="vendors">⌘ Vendors &amp; AMC</button>
+        <button class="nav-item" data-view="dr-tracker">◎ DR Tracker</button>
+        <button class="nav-item" data-view="capas">⚠ CAPA Register</button>
+        <button class="nav-item" data-view="branch-compliance">▦ Branch Compliance</button>
+      </div>
+
+      <div class="nav-group">
+        <h5>Checklists &amp; Operations</h5>
+        <button class="nav-item" data-view="chk-my-tasks">✓ My Tasks <span class="badge" id="chkMyBadge">0</span></button>
+        <button class="nav-item" data-view="chk-review-queue">⚐ Review Queue <span class="badge" id="chkRevBadge">0</span></button>
+        <button class="nav-item" data-view="chk-all-tasks">☰ All Tasks</button>
+        <button class="nav-item" data-view="chk-templates">◎ Templates</button>
+        <button class="nav-item" data-view="chk-compliance">▣ Compliance</button>
+      </div>
+
+      <div class="nav-group">
+        <h5>Library</h5>
+        <button class="nav-item" data-view="sop-library">§ SOP Library</button>
+        <button class="nav-item" data-view="change-calendar">▦ Change Calendar</button>
+      </div>
+
+      <div class="nav-group" id="adminGroup" style="display:none">
+        <h5>Admin</h5>
+        <button class="nav-item" data-view="all-requests">☰ All Requests</button>
+        <button class="nav-item" data-view="reports">▲ Reports</button>
+      </div>
+    </nav>
+
+    <div class="side-foot">
+      <div class="user-card">
+        <div class="avatar" id="userAvatar">—</div>
+        <div class="who">
+          <span id="userName">—</span>
+          <small id="userRole">—</small>
+        </div>
+      </div>
+      <div style="display:flex;gap:4px">
+        <button class="logout" id="btnSecurity" style="flex:1" title="Security settings">🔐 Security</button>
+        <button class="logout" id="btnLogout" style="flex:1">Sign out</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <!-- ============ LIVE IT SECURITY NEWS TICKER ============ -->
+    <div id="newsTicker" class="news-ticker" style="display:none">
+      <div class="news-ticker-label">
+        <span class="news-pulse"></span>
+        <span>LIVE IT SECURITY</span>
+      </div>
+      <div class="news-ticker-track">
+        <div id="newsTickerContent" class="news-ticker-content">
+          <span style="color:var(--muted);font-size:11.5px">Loading…</span>
+        </div>
+      </div>
+      <button class="news-ticker-close" id="newsTickerClose" title="Hide">×</button>
+    </div>
+
+    <div class="topbar">
+      <div>
+        <div class="crumbs" id="crumbs">FFC IT</div>
+        <h1 id="pageTitle">Dashboard</h1>
+      </div>
+      <div class="actions">
+        <button id="newsToggle" class="btn secondary btn-sm" title="Toggle news ticker" style="font-size:11px">📰 News</button>
+        <span class="conn-pill" id="connPill"><span class="dot"></span><span id="connText">Connected</span></span>
+      </div>
+    </div>
+
+    <div id="viewContent"></div>
+  </main>
+</div>
+
+<!-- ============ DETAIL DRAWER ============ -->
+<div id="drawerBg" class="drawer-bg">
+  <div class="drawer">
+    <div class="drawer-head">
+      <div>
+        <div class="crumbs" id="drawerRef">—</div>
+        <h2 id="drawerTitle">Loading…</h2>
+      </div>
+      <button class="close" id="drawerClose">×</button>
+    </div>
+    <div class="drawer-body" id="drawerBody"></div>
+  </div>
+</div>
+
+<!-- ============ TOAST ============ -->
+<div id="toast" class="toast"></div>
+
+<!-- ============ CONFIG ============ -->
+<script>
+  // PASTE YOUR SUPABASE PROJECT CREDENTIALS HERE
+  window.FFC_CONFIG = {
+    SUPABASE_URL: 'https://vvdbtjdxikzyttbxwequ.supabase.co',
+    SUPABASE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ2ZGJ0amR4aWt6eXR0Ynh3ZXF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMjU1NzcsImV4cCI6MjA5MTkwMTU3N30.GetjKMbJRtG-tJ9n-PQkSgm4MuGwwuBaMqtCMT8HPfI',
+    STORAGE_BUCKET: 'request-attachments'
+  };
+</script>
+<script src="app.js" type="module"></script>
+
+</body>
+</html>
