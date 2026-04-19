@@ -1,8 +1,10 @@
 :root{
+  /* FFC Brand — keep these unchanged */
   --green-900:#1f3d0c;
   --green-800:#2c5712;
   --green-700:#3D7A18;
   --green-500:#5BA829;
+  --green-200:#b8dca0;
   --green-100:#EDF7E0;
   --green-50:#F6FBEE;
   --orange:#F5A02A;
@@ -13,13 +15,24 @@
   --blue-bg:#e7f0f7;
   --warn-bg:#fff4e0;
   --ok-bg:#e6f4d8;
-  --ink:#0f1a07;
-  --ink-soft:#3a4a30;
-  --muted:#7a8775;
-  --line:#e3ebd8;
-  --line-strong:#c8d6b8;
-  --bg:#fbfcf7;
+
+  /* Slate theme surfaces */
+  --ink:#1e293b;
+  --ink-soft:#475569;
+  --muted:#94a3b8;
+  --line:#e2e8f0;
+  --line-strong:#cbd5e1;
+  --bg:#f8fafc;
   --card:#ffffff;
+
+  /* Slate sidebar palette */
+  --slate-900:#0f172a;
+  --slate-800:#1e293b;
+  --slate-700:#334155;
+  --slate-600:#475569;
+  --slate-text:#cbd5e1;
+  --slate-muted:#64748b;
+  --slate-active-bg:#5BA829;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:var(--bg);color:var(--ink);font-family:'Inter Tight',system-ui,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
@@ -104,39 +117,40 @@ code{font-family:'JetBrains Mono',monospace;font-size:.92em;background:var(--gre
 @media (max-width:900px){.app{grid-template-columns:1fr}.sidebar{display:none}}
 
 .sidebar{
-  background:var(--ink);color:#dfe7d3;padding:20px 16px;display:flex;flex-direction:column;
-  position:sticky;top:0;height:100vh;overflow-y:auto
+  background:var(--slate-900);color:var(--slate-text);padding:20px 16px;display:flex;flex-direction:column;
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+  border-right:1px solid rgba(91,168,41,0.15)
 }
 .side-brand{display:flex;align-items:center;gap:10px;margin-bottom:30px;padding:0 6px}
 .side-brand .brand-hex{width:36px;height:36px;font-size:15px;border-radius:9px;box-shadow:none}
-.side-brand .brand-text{font-size:15px;color:#fff}
-.side-brand .brand-text small{font-size:9px;color:#9bb38a}
+.side-brand .brand-text{font-size:15px;color:#f1f5f9}
+.side-brand .brand-text small{font-size:9px;color:#5BA829;letter-spacing:.06em}
 .nav{flex:1}
 .nav-group{margin-bottom:18px}
-.nav-group h5{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:#7a8e6b;margin:0 8px 8px;font-weight:500}
+.nav-group h5{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.15em;text-transform:uppercase;color:var(--slate-muted);margin:0 8px 8px;font-weight:500}
 .nav-item{
-  display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:#c2d1b4;
+  display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--slate-text);
   cursor:pointer;font-size:13px;font-weight:500;margin-bottom:2px;transition:background .15s, color .15s;
   width:100%;text-align:left
 }
-.nav-item:hover{background:rgba(255,255,255,.05);color:#fff}
-.nav-item.active{background:var(--green-700);color:#fff}
+.nav-item:hover{background:rgba(255,255,255,.06);color:#f1f5f9}
+.nav-item.active{background:var(--green-700);color:#fff;box-shadow:0 2px 8px rgba(91,168,41,0.3)}
 .nav-item .badge{margin-left:auto;background:var(--orange);color:#fff;font-size:10px;padding:1px 7px;border-radius:20px;font-weight:700;font-family:'JetBrains Mono',monospace}
 .nav-item.active .badge{background:#fff;color:var(--green-800)}
 .nav-item .badge[data-zero="true"]{display:none}
-.side-foot{margin-top:auto;padding-top:18px;border-top:1px solid rgba(255,255,255,.08)}
-.user-card{display:flex;align-items:center;gap:10px;padding:9px;border-radius:8px;background:rgba(255,255,255,.03)}
+.side-foot{margin-top:auto;padding-top:18px;border-top:1px solid rgba(255,255,255,.06)}
+.user-card{display:flex;align-items:center;gap:10px;padding:9px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06)}
 .avatar{width:34px;height:34px;border-radius:50%;background:var(--green-500);display:grid;place-items:center;font-weight:700;color:#fff;font-size:13px;flex-shrink:0}
-.user-card .who{font-size:12.5px;color:#fff;line-height:1.3;overflow:hidden}
+.user-card .who{font-size:12.5px;color:#f1f5f9;line-height:1.3;overflow:hidden}
 .user-card .who span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.user-card .who small{display:block;color:#9bb38a;font-size:10.5px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.logout{margin-top:6px;font-size:11px;color:#9bb38a;padding:7px;text-align:center;border-radius:6px;display:block;width:100%;background:transparent;letter-spacing:.05em;text-transform:uppercase;font-family:'JetBrains Mono',monospace}
-.logout:hover{color:#fff;background:rgba(255,255,255,.05)}
+.user-card .who small{display:block;color:var(--green-500);font-size:10.5px;font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.logout{margin-top:6px;font-size:11px;color:var(--slate-muted);padding:7px;text-align:center;border-radius:6px;display:block;width:100%;background:transparent;letter-spacing:.05em;text-transform:uppercase;font-family:'JetBrains Mono',monospace;border:1px solid rgba(255,255,255,.06)}
+.logout:hover{color:#f1f5f9;background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12)}
 
 /* ============ MAIN ============ */
 .main{padding:28px 36px 80px;overflow-x:hidden;min-width:0}
 @media (max-width:900px){.main{padding:18px}}
-.topbar{display:flex;justify-content:space-between;align-items:end;margin-bottom:26px;gap:18px;flex-wrap:wrap}
+.topbar{display:flex;justify-content:space-between;align-items:end;margin-bottom:26px;gap:18px;flex-wrap:wrap;padding-bottom:20px;border-bottom:1px solid var(--line)}
 .crumbs{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
 .topbar h1{font-family:'Fraunces',serif;font-weight:500;font-size:32px;letter-spacing:-.02em;line-height:1.05}
 .actions{display:flex;gap:10px;align-items:center}
@@ -382,7 +396,7 @@ textarea{resize:vertical;min-height:80px}
 .news-ticker {
   display: flex;
   align-items: stretch;
-  background: linear-gradient(90deg, #1a1f14 0%, #0f1a07 100%);
+  background: linear-gradient(90deg, #0f172a 0%, #1e293b 100%);
   border-bottom: 1px solid var(--ink);
   height: 32px;
   overflow: hidden;
