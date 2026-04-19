@@ -513,6 +513,7 @@ async function route(view) {
       case 'new-comp': await renderNewComp(); break;
       case 'sop-library': await renderSopLibrary(); break;
       case 'change-calendar': await renderChangeCalendar(); break;
+      case 'it-projects': await renderITProjects(); break;
       case 'chk-my-tasks': await renderMyChecklistTasks(); break;
       case 'chk-all-tasks': await renderAllChecklistTasks(); break;
       case 'chk-review-queue': await renderChecklistReviewQueue(); break;
@@ -6267,4 +6268,704 @@ async function importCSVRows(type, rows) {
   }
 
   return { inserted, skipped };
+}
+
+// =============================================================================
+// IT PROJECT TRACKER
+// =============================================================================
+
+const PROJECT_CATEGORIES = [
+  ['infrastructure','Infrastructure'],['security','Security'],['erp','ERP'],
+  ['operations','Operations'],['compliance','Compliance'],['networking','Networking'],['other','Other']
+];
+const PROJECT_STATUSES = [
+  ['planning','Planning'],['in_progress','In Progress'],['on_hold','On Hold'],
+  ['completed','Completed'],['cancelled','Cancelled']
+];
+const PROJECT_PRIORITIES = [['low','Low'],['medium','Medium'],['high','High'],['critical','Critical']];
+const MS_STATUSES = [
+  ['pending','Pending'],['in_progress','In Progress'],['completed','Completed'],
+  ['overdue','Overdue'],['cancelled','Cancelled']
+];
+
+const ragColor = { green:'#22c55e', amber:'#f59e0b', red:'#ef4444' };
+const ragBg    = { green:'#f0fdf4', amber:'#fffbeb', red:'#fef2f2' };
+const ragLabel = { green:'On Track', amber:'At Risk', red:'Off Track' };
+
+const statusColor = {
+  planning:'#6366f1', in_progress:'#3b82f6', on_hold:'#f59e0b',
+  completed:'#22c55e', cancelled:'#9ca3af'
+};
+
+async function renderITProjects() {
+  const canWrite = isAdmin() || hasRole('it_manager') || hasRole('sysadmin') || hasRole('network_admin') || hasRole('erp_admin');
+
+  const [metricsRes, projectsRes] = await Promise.allSettled([
+    sb.rpc('project_metrics'),
+    sb.from('it_projects')
+      .select('*, owner:profiles!it_projects_owner_id_fkey(full_name,email), milestones:project_milestones(id,status,planned_end)')
+      .order('planned_end', { ascending: true, nullsFirst: false })
+  ]);
+
+  const m = metricsRes.value?.data || {};
+  const projects = projectsRes.value?.data || [];
+
+  $('#viewContent').innerHTML = `
+    <!-- Stats -->
+    <div class="stats-grid">
+      <div class="stat accent">
+        <div class="label">Active Projects</div>
+        <div class="value">${(m.planning||0) + (m.in_progress||0)}</div>
+        <div class="sub">${m.in_progress||0} in progress · ${m.planning||0} planning</div>
+      </div>
+      <div class="stat ${(m.red_projects||0) > 0 ? 'danger' : (m.amber_projects||0) > 0 ? 'warn' : ''}">
+        <div class="label">Health</div>
+        <div class="value">${m.red_projects||0} <span style="font-size:14px">🔴</span> ${m.amber_projects||0} <span style="font-size:14px">🟡</span></div>
+        <div class="sub">Red · Amber projects</div>
+      </div>
+      <div class="stat ${(m.overdue_milestones||0) > 0 ? 'danger' : ''}">
+        <div class="label">Overdue Milestones</div>
+        <div class="value">${m.overdue_milestones||0}</div>
+        <div class="sub">need attention</div>
+      </div>
+      <div class="stat">
+        <div class="label">My Projects</div>
+        <div class="value">${m.my_projects||0}</div>
+        <div class="sub">assigned to me</div>
+      </div>
+      <div class="stat">
+        <div class="label">Completed</div>
+        <div class="value">${m.completed_this_year||0}</div>
+        <div class="sub">this year</div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="filter-bar">
+      <select id="prjfStatus"><option value="">All statuses</option>
+        ${PROJECT_STATUSES.map(([v,l]) => `<option value="${v}">${l}</option>`).join('')}
+      </select>
+      <select id="prjfCat"><option value="">All categories</option>
+        ${PROJECT_CATEGORIES.map(([v,l]) => `<option value="${v}">${l}</option>`).join('')}
+      </select>
+      <input id="prjfSearch" placeholder="Search projects…" />
+      <span class="count" id="prjCount">${projects.length} projects</span>
+      ${canWrite ? `<button class="btn ok btn-sm" id="btnNewProject" style="margin-left:8px">+ New Project</button>` : ''}
+    </div>
+
+    <!-- Two views: List + Gantt -->
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn secondary btn-sm active-tab" id="tabList" style="border-bottom:2px solid var(--green-700)">☰ List</button>
+      <button class="btn secondary btn-sm" id="tabGantt">▦ Gantt</button>
+    </div>
+
+    <!-- List view -->
+    <div id="prjListView">
+      <div id="prjList">
+        ${renderProjectList(projects)}
+      </div>
+    </div>
+
+    <!-- Gantt view (hidden by default) -->
+    <div id="prjGanttView" style="display:none">
+      <div id="prjGantt"></div>
+    </div>
+  `;
+
+  // Filter logic
+  const apply = () => {
+    const st = $('#prjfStatus').value;
+    const cat = $('#prjfCat').value;
+    const q = $('#prjfSearch').value.toLowerCase();
+    const filtered = projects.filter(p =>
+      (!st || p.status === st) &&
+      (!cat || p.category === cat) &&
+      (!q || p.name.toLowerCase().includes(q) || (p.description||'').toLowerCase().includes(q))
+    );
+    $('#prjCount').textContent = `${filtered.length} projects`;
+    $('#prjList').innerHTML = renderProjectList(filtered);
+    wireProjectRows();
+  };
+  ['prjfStatus','prjfCat','prjfSearch'].forEach(id => $('#'+id).addEventListener('input', apply));
+
+  // Tab switching
+  $('#tabList').addEventListener('click', () => {
+    $('#prjListView').style.display = '';
+    $('#prjGanttView').style.display = 'none';
+    $('#tabList').style.borderBottom = '2px solid var(--green-700)';
+    $('#tabGantt').style.borderBottom = '';
+  });
+  $('#tabGantt').addEventListener('click', async () => {
+    $('#prjListView').style.display = 'none';
+    $('#prjGanttView').style.display = '';
+    $('#tabGantt').style.borderBottom = '2px solid var(--green-700)';
+    $('#tabList').style.borderBottom = '';
+    await renderGantt(projects);
+  });
+
+  if (canWrite) $('#btnNewProject').addEventListener('click', () => openProjectEditor(null));
+  wireProjectRows();
+}
+
+function renderProjectList(projects) {
+  if (!projects.length) return `<div style="padding:40px;text-align:center;color:var(--muted)">No projects found. Click + New Project to add one.</div>`;
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${projects.map(p => {
+        const totalMs = (p.milestones||[]).length;
+        const doneMs = (p.milestones||[]).filter(m => m.status === 'completed').length;
+        const overdueMs = (p.milestones||[]).filter(m => m.status === 'overdue').length;
+        const daysLeft = p.planned_end ? Math.floor((new Date(p.planned_end) - new Date()) / 86400000) : null;
+
+        return `
+        <div class="proj-card" data-proj="${p.id}">
+          <div class="proj-card-left">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <span style="background:${ragBg[p.rag||'green']};color:${ragColor[p.rag||'green']};font-size:10px;font-weight:700;padding:2px 8px;border-radius:12px;border:1px solid ${ragColor[p.rag||'green']}33">
+                ${ragLabel[p.rag||'green']}
+              </span>
+              <span style="background:${statusColor[p.status]}22;color:${statusColor[p.status]};font-size:10px;font-weight:600;padding:2px 8px;border-radius:12px">
+                ${PROJECT_STATUSES.find(s=>s[0]===p.status)?.[1]||p.status}
+              </span>
+              <span style="font-size:10px;color:var(--muted);font-family:monospace">${p.project_code}</span>
+              ${overdueMs > 0 ? `<span style="background:#fef2f2;color:#ef4444;font-size:10px;font-weight:600;padding:2px 8px;border-radius:12px">⚠ ${overdueMs} overdue</span>` : ''}
+            </div>
+            <div style="font-size:15px;font-weight:600;color:var(--ink);margin-bottom:4px">${escape(p.name)}</div>
+            ${p.description ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px">${escape(p.description.substring(0,120))}${p.description.length>120?'…':''}</div>` : ''}
+            <div style="display:flex;gap:16px;font-size:11px;color:var(--muted)">
+              <span>👤 ${escape(p.owner?.full_name||'Unassigned')}</span>
+              <span>📂 ${PROJECT_CATEGORIES.find(c=>c[0]===p.category)?.[1]||p.category}</span>
+              ${p.planned_start ? `<span>📅 ${fmtDate(p.planned_start)} → ${fmtDate(p.planned_end)}</span>` : ''}
+              ${totalMs > 0 ? `<span>🎯 ${doneMs}/${totalMs} milestones</span>` : ''}
+            </div>
+          </div>
+          <div class="proj-card-right">
+            <div style="text-align:center;margin-bottom:8px">
+              <div style="font-size:24px;font-weight:700;color:var(--green-700)">${p.progress_pct||0}%</div>
+              <div style="font-size:10px;color:var(--muted)">complete</div>
+            </div>
+            <div style="width:80px;height:6px;background:var(--line);border-radius:3px;overflow:hidden">
+              <div style="width:${p.progress_pct||0}%;height:100%;background:${p.progress_pct>=100?'var(--green-700)':p.rag==='red'?'#ef4444':p.rag==='amber'?'#f59e0b':'var(--green-500)'};border-radius:3px;transition:width 0.3s"></div>
+            </div>
+            ${daysLeft !== null ? `<div style="font-size:10px;margin-top:6px;text-align:center;color:${daysLeft<0?'#ef4444':daysLeft<14?'#f59e0b':'var(--muted)'}">
+              ${daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : `${daysLeft}d left`}
+            </div>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+function wireProjectRows() {
+  $$('.proj-card').forEach(el => el.addEventListener('click', () => openProjectDetail(el.dataset.proj)));
+}
+
+// Gantt chart renderer
+async function renderGantt(projects) {
+  const container = $('#prjGantt');
+  container.innerHTML = '<div style="padding:20px;color:var(--muted)">Loading Gantt…</div>';
+
+  // Load milestones for all projects
+  const projectIds = projects.map(p => p.id);
+  if (!projectIds.length) {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">No projects to display.</div>';
+    return;
+  }
+
+  const { data: milestones } = await sb.from('project_milestones')
+    .select('*')
+    .in('project_id', projectIds)
+    .order('seq');
+
+  const msMap = {};
+  (milestones || []).forEach(m => {
+    if (!msMap[m.project_id]) msMap[m.project_id] = [];
+    msMap[m.project_id].push(m);
+  });
+
+  // Determine date range
+  const allDates = [];
+  projects.forEach(p => {
+    if (p.planned_start) allDates.push(new Date(p.planned_start));
+    if (p.planned_end) allDates.push(new Date(p.planned_end));
+  });
+  (milestones||[]).forEach(m => {
+    if (m.planned_end) allDates.push(new Date(m.planned_end));
+  });
+
+  if (!allDates.length) {
+    container.innerHTML = '<div style="padding:40px;text-align:center;color:var(--muted)">Add dates to projects to see the Gantt chart.</div>';
+    return;
+  }
+
+  const minDate = new Date(Math.min(...allDates) - 7*86400000);
+  const maxDate = new Date(Math.max(...allDates) + 14*86400000);
+  const totalDays = Math.ceil((maxDate - minDate) / 86400000);
+  const today = new Date();
+
+  // Build month headers
+  const months = [];
+  let cur = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+  while (cur <= maxDate) {
+    months.push({ label: cur.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }), date: new Date(cur) });
+    cur.setMonth(cur.getMonth() + 1);
+  }
+
+  const dayWidth = Math.max(3, Math.min(8, Math.floor(900 / totalDays)));
+  const chartWidth = totalDays * dayWidth;
+  const rowHeight = 36;
+
+  const todayOffset = Math.floor((today - minDate) / 86400000) * dayWidth;
+
+  // Helper: position in chart
+  const dateToX = (d) => Math.floor((new Date(d) - minDate) / 86400000) * dayWidth;
+  const dateToW = (s, e) => Math.max(dayWidth, Math.floor((new Date(e) - new Date(s)) / 86400000) * dayWidth);
+
+  const msStatusStyle = {
+    pending: '#e0e7ff', in_progress: '#3b82f6', completed: '#22c55e',
+    overdue: '#ef4444', cancelled: '#9ca3af'
+  };
+
+  let ganttHTML = `
+    <div style="overflow-x:auto;padding-bottom:20px">
+      <div style="min-width:${chartWidth + 280}px">
+
+        <!-- Header: months -->
+        <div style="display:flex;margin-left:280px;border-bottom:2px solid var(--line)">
+          ${months.map(m => {
+            const monthStart = Math.max(0, Math.floor((m.date - minDate) / 86400000));
+            const monthEnd = Math.floor((new Date(m.date.getFullYear(), m.date.getMonth()+1, 1) - minDate) / 86400000);
+            const w = Math.max(0, (monthEnd - monthStart)) * dayWidth;
+            return `<div style="min-width:${w}px;font-size:10px;font-weight:600;color:var(--muted);padding:4px 4px;white-space:nowrap;overflow:hidden;border-right:1px solid var(--line)">${m.label}</div>`;
+          }).join('')}
+        </div>
+
+        <!-- Today line marker label -->
+        <div style="position:relative;margin-left:280px;height:0">
+          <div style="position:absolute;left:${todayOffset}px;top:0;bottom:0;z-index:2">
+            <div style="background:#ef4444;color:white;font-size:9px;font-weight:700;padding:1px 4px;border-radius:2px;white-space:nowrap;transform:translateX(-50%)">TODAY</div>
+          </div>
+        </div>
+
+        <!-- Rows -->
+        ${projects.map((p, pi) => {
+          const pMs = msMap[p.id] || [];
+          const rows = 1 + pMs.length;
+          const pStart = p.planned_start ? dateToX(p.planned_start) : null;
+          const pWidth = (p.planned_start && p.planned_end) ? dateToW(p.planned_start, p.planned_end) : null;
+
+          return `
+          <!-- Project row -->
+          <div style="display:flex;align-items:center;border-bottom:1px solid var(--line);height:${rowHeight}px;background:${pi%2===0?'#fafcf7':'white'}">
+            <div style="width:280px;flex-shrink:0;padding:0 12px;font-size:12.5px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:6px;cursor:pointer" onclick="openProjectDetail('${p.id}')">
+              <span style="width:8px;height:8px;border-radius:50%;background:${ragColor[p.rag||'green']};flex-shrink:0"></span>
+              <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escape(p.name)}</span>
+            </div>
+            <div style="position:relative;flex:1;height:${rowHeight}px">
+              <!-- Today line -->
+              <div style="position:absolute;left:${todayOffset}px;top:0;bottom:0;width:1px;background:#ef444466;z-index:1"></div>
+              <!-- Project bar -->
+              ${pStart !== null && pWidth !== null ? `
+              <div style="position:absolute;left:${pStart}px;top:8px;width:${pWidth}px;height:20px;background:${statusColor[p.status]}33;border:1.5px solid ${statusColor[p.status]};border-radius:4px;display:flex;align-items:center;padding:0 6px;overflow:hidden;z-index:2">
+                <div style="height:8px;width:${p.progress_pct||0}%;background:${statusColor[p.status]};border-radius:2px;transition:width 0.3s"></div>
+                <span style="font-size:9px;color:${statusColor[p.status]};font-weight:700;margin-left:4px;white-space:nowrap">${p.progress_pct||0}%</span>
+              </div>` : ''}
+            </div>
+          </div>
+
+          <!-- Milestone rows -->
+          ${pMs.map(ms => {
+            const mX = ms.planned_end ? dateToX(ms.planned_end) : null;
+            const mStart = ms.planned_start ? dateToX(ms.planned_start) : null;
+            const mW = (ms.planned_start && ms.planned_end) ? dateToW(ms.planned_start, ms.planned_end) : null;
+            return `
+            <div style="display:flex;align-items:center;border-bottom:1px dashed var(--line);height:${rowHeight}px;background:${pi%2===0?'#f5f9f0':'#f9fafb'}">
+              <div style="width:280px;flex-shrink:0;padding:0 12px 0 28px;font-size:11.5px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                ${ms.is_key_milestone ? '◆ ' : '· '}${escape(ms.title)}
+              </div>
+              <div style="position:relative;flex:1;height:${rowHeight}px">
+                <div style="position:absolute;left:${todayOffset}px;top:0;bottom:0;width:1px;background:#ef444433;z-index:1"></div>
+                ${mStart !== null && mW !== null ? `
+                <div style="position:absolute;left:${mStart}px;top:10px;width:${mW}px;height:16px;background:${msStatusStyle[ms.status]}44;border:1px solid ${msStatusStyle[ms.status]};border-radius:3px;z-index:2"></div>` : ''}
+                ${mX !== null && ms.is_key_milestone ? `
+                <div style="position:absolute;left:${mX-6}px;top:9px;width:12px;height:12px;background:${msStatusStyle[ms.status]};transform:rotate(45deg);z-index:3;border:1px solid white"></div>` : ''}
+              </div>
+            </div>`;
+          }).join('')}`;
+        }).join('')}
+
+        <!-- Legend -->
+        <div style="padding:12px;display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--muted);border-top:1px solid var(--line);margin-top:8px">
+          <span>Legend:</span>
+          ${Object.entries(msStatusStyle).map(([s,c]) => `<span style="display:flex;align-items:center;gap:4px"><span style="width:12px;height:8px;background:${c};border-radius:2px;display:inline-block"></span>${s}</span>`).join('')}
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:#6366f1;transform:rotate(45deg);display:inline-block"></span>Key milestone</span>
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:1px;height:12px;background:#ef4444;display:inline-block"></span>Today</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  container.innerHTML = ganttHTML;
+}
+
+// Project detail drawer
+async function openProjectDetail(projectId) {
+  const canWrite = isAdmin() || hasRole('it_manager') || hasRole('sysadmin') || hasRole('network_admin') || hasRole('erp_admin');
+
+  $('#drawerBg').classList.add('show');
+  $('#drawerBody').innerHTML = '<div class="loading">Loading…</div>';
+
+  const [projRes, msRes, updatesRes, profilesRes] = await Promise.all([
+    sb.from('it_projects').select('*, owner:profiles!it_projects_owner_id_fkey(full_name,email)').eq('id', projectId).single(),
+    sb.from('project_milestones').select('*, owner:profiles!project_milestones_owner_id_fkey(full_name)').eq('project_id', projectId).order('seq'),
+    sb.from('project_updates').select('*, author:profiles!project_updates_author_id_fkey(full_name)').eq('project_id', projectId).order('created_at', { ascending: false }).limit(10),
+    sb.from('profiles').select('id,full_name').eq('is_active', true).order('full_name')
+  ]);
+
+  const p = projRes.data;
+  if (!p) { $('#drawerTitle').textContent = 'Not found'; $('#drawerBody').innerHTML = ''; return; }
+
+  const ms = msRes.data || [];
+  const updates = updatesRes.data || [];
+  const profiles = profilesRes.data || [];
+
+  $('#drawerTitle').textContent = p.name;
+  $('#drawerRef').innerHTML = `${p.project_code} · <span style="color:${statusColor[p.status]}">${PROJECT_STATUSES.find(s=>s[0]===p.status)?.[1]||p.status}</span>`;
+
+  $('#drawerBody').innerHTML = `
+    <!-- RAG + Progress -->
+    <div style="display:flex;gap:12px;margin-bottom:16px;align-items:center">
+      <div style="background:${ragBg[p.rag||'green']};border:1px solid ${ragColor[p.rag||'green']}44;border-radius:8px;padding:8px 16px;text-align:center">
+        <div style="font-size:11px;color:var(--muted)">Health</div>
+        <div style="font-size:14px;font-weight:700;color:${ragColor[p.rag||'green']}">${ragLabel[p.rag||'green']}</div>
+      </div>
+      <div style="flex:1;background:var(--green-50);border-radius:8px;padding:8px 16px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--muted)">Progress</span>
+          <span style="font-size:13px;font-weight:700;color:var(--green-700)">${p.progress_pct||0}%</span>
+        </div>
+        <div style="height:8px;background:var(--line);border-radius:4px;overflow:hidden">
+          <div style="width:${p.progress_pct||0}%;height:100%;background:var(--green-500);border-radius:4px;transition:width 0.3s"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Meta -->
+    <div class="detail-meta">
+      <div class="m-item"><label>Category</label><span>${PROJECT_CATEGORIES.find(c=>c[0]===p.category)?.[1]||p.category}</span></div>
+      <div class="m-item"><label>Priority</label><span>${PROJECT_PRIORITIES.find(c=>c[0]===p.priority)?.[1]||p.priority}</span></div>
+      <div class="m-item"><label>Owner</label><span>${escape(p.owner?.full_name||'—')}</span></div>
+      <div class="m-item"><label>Start Date</label><span>${p.planned_start ? fmtDate(p.planned_start) : '—'}</span></div>
+      <div class="m-item"><label>End Date</label><span>${p.planned_end ? fmtDate(p.planned_end) : '—'}</span></div>
+      ${p.budget ? `<div class="m-item"><label>Budget</label><span>${Number(p.budget).toLocaleString()} ${p.budget_currency||'AED'}</span></div>` : ''}
+    </div>
+
+    ${p.description ? `<div class="detail-section"><h4>Description</h4><p>${escape(p.description)}</p></div>` : ''}
+
+    <!-- Milestones -->
+    <div class="detail-section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h4 style="margin:0">Milestones (${ms.length})</h4>
+        ${canWrite ? `<button class="btn secondary btn-sm" id="btnAddMs">+ Add Milestone</button>` : ''}
+      </div>
+      ${ms.length ? `
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${ms.map(m => `
+            <div class="mini-row" style="border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:white" data-ms-id="${m.id}">
+              <div class="mini-main">
+                <div style="display:flex;align-items:center;gap:8px">
+                  ${m.is_key_milestone ? '<span style="color:var(--green-700)">◆</span>' : '<span style="color:var(--muted)">·</span>'}
+                  <span style="font-size:13px;font-weight:500">${escape(m.title)}</span>
+                  <span style="font-size:10px;padding:1px 6px;border-radius:10px;background:${msStatusStyle[m.status]}22;color:${msStatusStyle[m.status]}">${m.status}</span>
+                  ${m.progress_pct > 0 ? `<span style="font-size:10px;color:var(--muted)">${m.progress_pct}%</span>` : ''}
+                </div>
+                <div style="font-size:11px;color:var(--muted);margin-top:3px;margin-left:18px">
+                  Due: ${fmtDate(m.planned_end)}${m.owner ? ` · ${escape(m.owner.full_name)}` : ''}
+                </div>
+              </div>
+              ${canWrite ? `
+              <div style="display:flex;gap:4px;flex-shrink:0">
+                <select class="ms-status-sel" data-ms="${m.id}" style="font-size:11px;padding:2px 4px;border:1px solid var(--line);border-radius:4px">
+                  ${MS_STATUSES.map(([v,l]) => `<option value="${v}" ${m.status===v?'selected':''}>${l}</option>`).join('')}
+                </select>
+              </div>` : ''}
+            </div>
+          `).join('')}
+        </div>` : `<p style="color:var(--muted);font-size:12px">No milestones yet. Add milestones to track progress.</p>`}
+    </div>
+
+    <!-- Status Updates -->
+    <div class="detail-section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <h4 style="margin:0">Status Updates</h4>
+      </div>
+      ${canWrite ? `
+      <div style="background:var(--green-50);border:1px solid var(--green-200);border-radius:8px;padding:14px;margin-bottom:14px">
+        <div style="display:flex;gap:8px;margin-bottom:8px">
+          <label style="font-size:11px;font-weight:600">RAG:</label>
+          <select id="updRag" style="font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:4px">
+            <option value="green">🟢 Green — On Track</option>
+            <option value="amber">🟡 Amber — At Risk</option>
+            <option value="red">🔴 Red — Off Track</option>
+          </select>
+          <input id="updPct" type="number" min="0" max="100" placeholder="Progress %" style="width:100px;font-size:12px;padding:2px 8px;border:1px solid var(--line);border-radius:4px" value="${p.progress_pct||0}" />
+        </div>
+        <textarea id="updSummary" rows="2" placeholder="What's the current status? What was done this week? Any blockers?" style="width:100%;font-size:12.5px;border:1px solid var(--line);border-radius:4px;padding:8px;resize:vertical"></textarea>
+        <div style="margin-top:8px;text-align:right">
+          <button class="btn ok btn-sm" id="btnPostUpdate">Post Update</button>
+        </div>
+      </div>` : ''}
+      ${updates.length ? `
+        <div class="timeline">
+          ${updates.map(u => `
+            <div class="tl-step done">
+              <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+                <span style="width:10px;height:10px;border-radius:50%;background:${ragColor[u.rag||'green']};display:inline-block"></span>
+                <h5 style="margin:0">${escape(u.author?.full_name||'—')} · ${fmtDateTime(u.created_at)}</h5>
+                ${u.progress_pct !== null ? `<span style="font-size:10px;color:var(--muted)">${u.progress_pct}%</span>` : ''}
+              </div>
+              <div class="meta">${escape(u.summary)}</div>
+            </div>
+          `).join('')}
+        </div>` : '<p style="color:var(--muted);font-size:12px">No updates yet.</p>'}
+    </div>
+
+    ${canWrite ? `
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn ok" id="btnEditProject">Edit Project</button>
+      <button class="btn secondary" onclick="closeDrawer()">Close</button>
+    </div>` : ''}
+  `;
+
+  // Wire milestone status changes
+  $$('.ms-status-sel').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const msId = sel.dataset.ms;
+      const { error } = await sb.from('project_milestones')
+        .update({ status: sel.value, actual_end: sel.value === 'completed' ? new Date().toISOString().slice(0,10) : null })
+        .eq('id', msId);
+      if (error) { toast(error.message, 'error'); return; }
+      await sb.rpc('recalc_project_progress', { p_project_id: projectId });
+      toast('Milestone updated', 'success');
+      openProjectDetail(projectId);
+    });
+  });
+
+  // Post update
+  if ($('#btnPostUpdate')) {
+    $('#btnPostUpdate').addEventListener('click', async () => {
+      const summary = $('#updSummary').value.trim();
+      if (!summary) { toast('Please write an update', 'error'); return; }
+      const rag = $('#updRag').value;
+      const pct = $('#updPct').value ? parseInt($('#updPct').value) : null;
+
+      const btn = $('#btnPostUpdate');
+      btn.disabled = true; btn.textContent = 'Posting…';
+
+      const { error } = await sb.from('project_updates').insert({
+        project_id: projectId, author_id: CURRENT_USER.id,
+        rag, summary, progress_pct: pct
+      });
+      if (error) { toast(error.message, 'error'); btn.disabled = false; btn.textContent = 'Post Update'; return; }
+
+      // Update project RAG + progress
+      await sb.from('it_projects').update({
+        rag,
+        ...(pct !== null ? { progress_pct: pct } : {}),
+        updated_at: new Date().toISOString()
+      }).eq('id', projectId);
+
+      toast('Update posted', 'success');
+      openProjectDetail(projectId);
+    });
+  }
+
+  // Add milestone
+  if ($('#btnAddMs')) {
+    $('#btnAddMs').addEventListener('click', () => openMilestoneEditor(projectId, null, ms.length + 1));
+  }
+
+  // Edit project
+  if ($('#btnEditProject')) {
+    $('#btnEditProject').addEventListener('click', () => openProjectEditor(projectId));
+  }
+}
+
+// Project editor
+async function openProjectEditor(projectId) {
+  const { data: profiles } = await sb.from('profiles').select('id,full_name').eq('is_active', true).order('full_name');
+  const proj = projectId ? (await sb.from('it_projects').select('*').eq('id', projectId).single()).data : null;
+  const p = proj || {};
+
+  $('#drawerTitle').textContent = projectId ? 'Edit Project' : 'New Project';
+  $('#drawerRef').textContent = projectId ? p.project_code : 'New';
+
+  $('#drawerBody').innerHTML = `
+    <div class="form-section">
+      <h4>Project Details</h4>
+      <div class="grid-2">
+        <div class="field"><label class="required">Project Name</label>
+          <input id="pe-name" value="${escape(p.name||'')}" placeholder="e.g. MFA Rollout Phase 2" /></div>
+        <div class="field"><label class="required">Category</label>
+          <select id="pe-cat">${PROJECT_CATEGORIES.map(([v,l]) => `<option value="${v}" ${p.category===v?'selected':''}>${l}</option>`).join('')}</select></div>
+        <div class="field"><label class="required">Priority</label>
+          <select id="pe-pri">${PROJECT_PRIORITIES.map(([v,l]) => `<option value="${v}" ${p.priority===v?'selected':''}>${l}</option>`).join('')}</select></div>
+        <div class="field"><label class="required">Status</label>
+          <select id="pe-status">${PROJECT_STATUSES.map(([v,l]) => `<option value="${v}" ${p.status===v?'selected':''}>${l}</option>`).join('')}</select></div>
+        <div class="field"><label>Owner</label>
+          <select id="pe-owner"><option value="">— Unassigned —</option>
+            ${(profiles||[]).map(u => `<option value="${u.id}" ${p.owner_id===u.id?'selected':''}>${escape(u.full_name)}</option>`).join('')}
+          </select></div>
+        <div class="field"><label>RAG Status</label>
+          <select id="pe-rag">
+            <option value="green" ${p.rag==='green'?'selected':''}>🟢 Green — On Track</option>
+            <option value="amber" ${p.rag==='amber'?'selected':''}>🟡 Amber — At Risk</option>
+            <option value="red" ${p.rag==='red'?'selected':''}>🔴 Red — Off Track</option>
+          </select></div>
+        <div class="field"><label>Start Date</label>
+          <input type="date" id="pe-start" value="${p.planned_start||''}" /></div>
+        <div class="field"><label>Target End Date</label>
+          <input type="date" id="pe-end" value="${p.planned_end||''}" /></div>
+        <div class="field"><label>Progress %</label>
+          <input type="number" id="pe-pct" min="0" max="100" value="${p.progress_pct||0}" /></div>
+        <div class="field"><label>Budget (AED)</label>
+          <input type="number" id="pe-budget" value="${p.budget||''}" placeholder="0" /></div>
+      </div>
+      <div class="field"><label>Description</label>
+        <textarea id="pe-desc" rows="3" placeholder="What is this project about? What are the goals?">${escape(p.description||'')}</textarea></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn ok" id="btnSaveProject">${projectId ? 'Save Changes' : 'Create Project'}</button>
+      <button class="btn secondary" onclick="closeDrawer()">Cancel</button>
+    </div>
+  `;
+
+  const get = id => document.getElementById(id)?.value?.trim() || '';
+
+  $('#btnSaveProject').addEventListener('click', async () => {
+    if (!get('pe-name')) { toast('Project name required', 'error'); return; }
+    const btn = $('#btnSaveProject');
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Saving…';
+
+    const payload = {
+      name: get('pe-name'),
+      category: get('pe-cat'),
+      priority: get('pe-pri'),
+      status: get('pe-status'),
+      rag: get('pe-rag'),
+      owner_id: get('pe-owner') || null,
+      planned_start: get('pe-start') || null,
+      planned_end: get('pe-end') || null,
+      progress_pct: parseInt(get('pe-pct')) || 0,
+      budget: get('pe-budget') ? parseFloat(get('pe-budget')) : null,
+      description: get('pe-desc') || null,
+      updated_at: new Date().toISOString()
+    };
+
+    try {
+      if (projectId) {
+        const { error } = await sb.from('it_projects').update(payload).eq('id', projectId);
+        if (error) throw error;
+        toast('Project updated', 'success');
+        openProjectDetail(projectId);
+      } else {
+        const { data: codeData } = await sb.rpc('gen_project_code');
+        payload.project_code = codeData || `PRJ-${Date.now()}`;
+        payload.created_by = CURRENT_USER.id;
+        const { error } = await sb.from('it_projects').insert(payload);
+        if (error) throw error;
+        toast('Project created', 'success');
+        closeDrawer();
+        route('it-projects');
+      }
+    } catch(e) {
+      toast(e.message || 'Save failed', 'error');
+      btn.disabled = false;
+      btn.innerHTML = projectId ? 'Save Changes' : 'Create Project';
+    }
+  });
+}
+
+// Milestone editor
+async function openMilestoneEditor(projectId, milestoneId, defaultSeq) {
+  const { data: profiles } = await sb.from('profiles').select('id,full_name').eq('is_active', true).order('full_name');
+  const ms = milestoneId ? (await sb.from('project_milestones').select('*').eq('id', milestoneId).single()).data : null;
+  const m = ms || {};
+
+  // Show as a mini-modal over the drawer
+  const existing = document.getElementById('msModal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'msModal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10001;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:10px;padding:24px;max-width:480px;width:100%;font-family:Inter,sans-serif">
+      <h3 style="margin:0 0 16px;font-size:16px">${milestoneId ? 'Edit Milestone' : 'Add Milestone'}</h3>
+      <div class="field"><label class="required">Title</label>
+        <input id="ms-title" value="${escape(m.title||'')}" placeholder="e.g. Deploy to staging environment" /></div>
+      <div class="grid-2">
+        <div class="field"><label>Start Date</label><input type="date" id="ms-start" value="${m.planned_start||''}" /></div>
+        <div class="field"><label class="required">Due Date</label><input type="date" id="ms-end" value="${m.planned_end||''}" /></div>
+        <div class="field"><label>Owner</label>
+          <select id="ms-owner"><option value="">— Unassigned —</option>
+            ${(profiles||[]).map(u => `<option value="${u.id}" ${m.owner_id===u.id?'selected':''}>${escape(u.full_name)}</option>`).join('')}
+          </select></div>
+        <div class="field"><label>Status</label>
+          <select id="ms-status">${MS_STATUSES.map(([v,l]) => `<option value="${v}" ${m.status===v?'selected':''}>${l}</option>`).join('')}</select></div>
+        <div class="field"><label>Progress %</label>
+          <input type="number" id="ms-pct" min="0" max="100" value="${m.progress_pct||0}" /></div>
+        <div class="field" style="display:flex;align-items:center;gap:8px;padding-top:24px">
+          <input type="checkbox" id="ms-key" ${m.is_key_milestone?'checked':''} />
+          <label for="ms-key" style="font-size:12px">Key milestone (◆ on Gantt)</label>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn ok" id="btnSaveMs">${milestoneId ? 'Save' : 'Add Milestone'}</button>
+        <button class="btn secondary" onclick="document.getElementById('msModal').remove()">Cancel</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  document.getElementById('btnSaveMs').addEventListener('click', async () => {
+    const title = document.getElementById('ms-title').value.trim();
+    const end = document.getElementById('ms-end').value;
+    if (!title || !end) { toast('Title and due date required', 'error'); return; }
+
+    const payload = {
+      project_id: projectId,
+      seq: m.seq || defaultSeq,
+      title,
+      planned_start: document.getElementById('ms-start').value || null,
+      planned_end: end,
+      owner_id: document.getElementById('ms-owner').value || null,
+      status: document.getElementById('ms-status').value,
+      progress_pct: parseInt(document.getElementById('ms-pct').value) || 0,
+      is_key_milestone: document.getElementById('ms-key').checked,
+      updated_at: new Date().toISOString()
+    };
+
+    const btn = document.getElementById('btnSaveMs');
+    btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
+
+    try {
+      if (milestoneId) {
+        const { error } = await sb.from('project_milestones').update(payload).eq('id', milestoneId);
+        if (error) throw error;
+      } else {
+        const { error } = await sb.from('project_milestones').insert(payload);
+        if (error) throw error;
+      }
+      await sb.rpc('recalc_project_progress', { p_project_id: projectId });
+      modal.remove();
+      toast(milestoneId ? 'Milestone updated' : 'Milestone added', 'success');
+      openProjectDetail(projectId);
+    } catch(e) {
+      toast(e.message || 'Save failed', 'error');
+      btn.disabled = false; btn.textContent = milestoneId ? 'Save' : 'Add Milestone';
+    }
+  });
 }
