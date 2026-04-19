@@ -2762,8 +2762,8 @@ async function openTemplateEditor(templateId) {
     <div class="form-section">
       <h4>Template Basics</h4>
       <div class="grid-2">
-        <div class="field"><label class="required">Template Code</label>
-          <input id="te-code" value="${escape(t.template_code || '')}" placeholder="TPL-BKP-DAILY-001" />
+        <div class="field"><label>Template Code <span style="font-weight:400;color:var(--muted)">(optional — auto-generated if blank)</span></label>
+          <input id="te-code" value="${escape(t.template_code || '')}" placeholder="Auto-generated if blank (e.g. TPL-BACKUP-DAILY)" />
         </div>
         <div class="field"><label class="required">Template Name</label>
           <input id="te-name" value="${escape(t.name || '')}" placeholder="Daily Backup Verification" />
@@ -2905,18 +2905,38 @@ async function openTemplateEditor(templateId) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spin"></span> Saving…';
     try {
-      const code = $('#te-code').value.trim();
+      let code = $('#te-code').value.trim();
       const name = $('#te-name').value.trim();
       const catId = $('#te-cat').value;
       const freq = $('#te-freq').value;
       const engineerId = $('#te-engineer').value;
-      if (!code || !name || !catId || !freq || !engineerId) {
-        toast('Code, name, category, frequency, and engineer are required', 'error');
+      if (!name || !catId || !freq || !engineerId) {
+        toast('Name, category, frequency, and engineer are required', 'error');
         return;
       }
       if (editingItems.length === 0 || editingItems.some(i => !i.title?.trim())) {
         toast('At least one item required; every item must have a title', 'error');
         return;
+      }
+
+      // Auto-generate code if blank
+      if (!code) {
+        const year = new Date().getFullYear();
+        const rand = Math.floor(Math.random() * 9000) + 1000;
+        const prefix = name.replace(/[^a-zA-Z0-9]/g, '-').toUpperCase().substring(0, 8);
+        code = `TPL-${prefix}-${year}-${rand}`;
+        $('#te-code').value = code;
+      }
+
+      // Check for duplicate code (only on new templates)
+      if (!templateId) {
+        const { data: existing } = await sb.from('checklist_templates')
+          .select('id').eq('template_code', code).maybeSingle();
+        if (existing) {
+          // Auto-fix: append random suffix
+          code = code + '-' + Math.floor(Math.random() * 900 + 100);
+          $('#te-code').value = code;
+        }
       }
 
       const payload = {
