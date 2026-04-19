@@ -586,24 +586,20 @@ async function renderDashboard() {
     <div id="dashAlertSlot"></div>
 
     <div class="stats-grid" id="dashStatsMine">
-      ${[1,2,3,4,5].map(() => `
-        <div class="stat" style="opacity:0.5">
-          <div class="label">&nbsp;</div>
-          <div class="value" style="background:var(--green-50);height:30px;border-radius:4px"></div>
-          <div class="sub">&nbsp;</div>
-        </div>
-      `).join('')}
+      <div class="stat accent"><div class="label">My Approvals</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
+      <div class="stat"><div class="label">My Checklists</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
+      <div class="stat"><div class="label">My CAPAs</div><div class="value">0</div><div class="sub">none overdue</div></div>
+      <div class="stat"><div class="label">My Onb. Tasks</div><div class="value">0</div><div class="sub">assigned to me</div></div>
+      <div class="stat"><div class="label">Unread</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
     </div>
 
     ${isMgr ? `
     <div class="stats-grid" id="dashStatsOrg" style="margin-top:0">
-      ${[1,2,3,4,5].map(() => `
-        <div class="stat" style="opacity:0.5">
-          <div class="label">&nbsp;</div>
-          <div class="value" style="background:var(--green-50);height:30px;border-radius:4px"></div>
-          <div class="sub">&nbsp;</div>
-        </div>
-      `).join('')}
+      <div class="stat"><div class="label">Requests In Flight</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
+      <div class="stat"><div class="label">Critical CAPAs</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
+      <div class="stat"><div class="label">Licenses Expiring</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
+      <div class="stat"><div class="label">Vendor Contracts</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
+      <div class="stat"><div class="label">DR Tests</div><div class="value">—</div><div class="sub">&nbsp;</div></div>
     </div>` : ''}
 
     <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:16px;margin-top:16px" id="dashGrid">
@@ -677,7 +673,11 @@ async function renderDashboard() {
       .order('due_at', { ascending: true }).limit(8),
     sb.from('onboarding_tasks').select('id, task_title, status, onb:onboarding_requests(employee_full_name, request_type)')
       .eq('assigned_to', CURRENT_USER.id)
-      .in('status', ['pending','in_progress']).limit(8)
+      .in('status', ['pending','in_progress']).limit(8),
+    // My CAPAs count — personal, fast, doesn't need manager RPC
+    sb.from('capas').select('id, status, target_date')
+      .eq('owner_id', CURRENT_USER.id)
+      .in('status', ['open','assigned','in_progress','pending_evidence','pending_verification','overdue']),
   ];
 
   // Render top stats as soon as metrics arrive (fastest queries)
@@ -699,13 +699,13 @@ async function renderDashboard() {
         </div>
         <div class="stat">
           <div class="label">My CAPAs</div>
-          <div class="value">—</div>
-          <div class="sub">loading…</div>
+          <div class="value">0</div>
+          <div class="sub">none overdue</div>
         </div>
         <div class="stat">
           <div class="label">My Onb. Tasks</div>
-          <div class="value">—</div>
-          <div class="sub">loading…</div>
+          <div class="value">0</div>
+          <div class="sub">assigned to me</div>
         </div>
         <div class="stat ${(m.unread_notifications||0) > 0 ? 'warn' : ''}">
           <div class="label">Unread</div>
@@ -722,6 +722,34 @@ async function renderDashboard() {
     const myRecent   = results[1]?.value?.data || [];
     const myChkToday = results[2]?.value?.data || [];
     const myOnbTasks = results[3]?.value?.data || [];
+    const myCapas    = results[4]?.value?.data || [];
+
+    const myCapasOpen    = myCapas.length;
+    const myCapasOverdue = myCapas.filter(c => c.status === 'overdue' || (c.target_date && new Date(c.target_date) < new Date())).length;
+
+    // Update ALL 5 personal stat cards at once — no more loading placeholders
+    const statsMine = $('#dashStatsMine');
+    if (statsMine) {
+      // Get current content to preserve approvals + checklists from phase 1 metrics
+      // Just update the CAPAs and Onb cards (positions 3 and 4)
+      const cards = statsMine.querySelectorAll('.stat');
+      if (cards.length >= 4) {
+        // My CAPAs card
+        cards[2].className = 'stat' + (myCapasOverdue > 0 ? ' danger' : '');
+        cards[2].innerHTML = `
+          <div class="label">My CAPAs</div>
+          <div class="value">${myCapasOpen}</div>
+          <div class="sub">${myCapasOverdue > 0 ? myCapasOverdue + ' overdue' : 'none overdue'}</div>
+        `;
+        // My Onb Tasks card
+        cards[3].className = 'stat';
+        cards[3].innerHTML = `
+          <div class="label">My Onb. Tasks</div>
+          <div class="value">${myOnbTasks.length}</div>
+          <div class="sub">assigned to me</div>
+        `;
+      }
+    }
 
     // Approvals panel
     if (pending.length) {
@@ -747,19 +775,6 @@ async function renderDashboard() {
       recentBody.innerHTML = myRecent.length
         ? myRecent.map(r => miniRequestRow(r)).join('')
         : '<p style="color:var(--muted);font-size:12.5px;padding:10px 0">No requests yet.</p>';
-    }
-
-    // Update "My Onb Tasks" stat card if it's still showing "loading"
-    const statCards = document.querySelectorAll('#dashStatsMine .stat');
-    if (statCards.length >= 4) {
-      const onbCard = statCards[3];
-      if (onbCard) {
-        onbCard.innerHTML = `
-          <div class="label">My Onb. Tasks</div>
-          <div class="value">${myOnbTasks.length}</div>
-          <div class="sub">assigned to me</div>
-        `;
-      }
     }
 
     // Wire click handlers
