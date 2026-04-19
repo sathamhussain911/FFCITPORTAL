@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -38,7 +38,7 @@
       if (spin) spin.style.borderTopColor = '#c13b3b';
       esc.style.display = 'block';
     }
-  }, 6000);
+  }, 20000);
   // Update status messages so user knows something's happening
   window.__bootStatus = function(t) {
     var el = document.getElementById('bootStatus');
@@ -61,7 +61,8 @@
 <div id="loginScreen" class="login-shell" style="display:none">
   <div class="login-art">
     <div class="brand-mark">
-      <div class="brand-hex">FFC</div>
+      <img src="ffc-logo.jpg" alt="FFC" class="brand-logo" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+      <div class="brand-hex" style="display:none">FFC</div>
       <div class="brand-text">Fresh Fruits Company<small>IT Operations Portal</small></div>
     </div>
     <div class="login-hero">
@@ -99,7 +100,8 @@
 <div id="app" class="app">
   <aside class="sidebar">
     <div class="side-brand">
-      <div class="brand-hex">FFC</div>
+      <img src="ffc-logo.jpg" alt="FFC" class="brand-logo brand-logo-sm" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+      <div class="brand-hex" style="display:none">FFC</div>
       <div class="brand-text">IT Portal<small>v2.0</small></div>
     </div>
 
@@ -149,6 +151,7 @@
         <h5>Library</h5>
         <button class="nav-item" data-view="sop-library">§ SOP Library</button>
         <button class="nav-item" data-view="change-calendar">▦ Change Calendar</button>
+        <button class="nav-item" data-view="it-projects">◈ IT Projects</button>
       </div>
 
       <div class="nav-group" id="adminGroup" style="display:none">
@@ -224,8 +227,8 @@
 <script>
   // PASTE YOUR SUPABASE PROJECT CREDENTIALS HERE
   window.FFC_CONFIG = {
-    SUPABASE_URL: 'https://vvdbtjdxikzyttbxwequ.supabase.co',
-    SUPABASE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ2ZGJ0amR4aWt6eXR0Ynh3ZXF1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYzMjU1NzcsImV4cCI6MjA5MTkwMTU3N30.GetjKMbJRtG-tJ9n-PQkSgm4MuGwwuBaMqtCMT8HPfI',
+    SUPABASE_URL: 'YOUR_SUPABASE_URL',
+    SUPABASE_KEY: 'YOUR_SUPABASE_ANON_KEY',
     STORAGE_BUCKET: 'request-attachments'
   };
 </script>
