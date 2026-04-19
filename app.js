@@ -61,9 +61,44 @@ async function login() {
   const btn = $('#btnLogin');
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span> Signing in…';
+
+  // Retry wrapper: if Supabase is warming up from idle (free tier),
+  // first request can fail. Auto-retry up to 3 times with backoff.
+  const attemptSignIn = async (attempt = 1) => {
+    try {
+      const { error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      return { success: true };
+    } catch (e) {
+      const isNetworkError = e.message?.includes('fetch') ||
+                             e.message?.includes('network') ||
+                             e.message?.includes('NetworkError') ||
+                             e.name === 'TypeError';
+
+      if (isNetworkError && attempt < 3) {
+        // Wait a bit longer each retry (1s → 2s → 4s) for cold-start warmup
+        btn.innerHTML = `<span class="spin"></span> Connecting (${attempt}/3)…`;
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+        return attemptSignIn(attempt + 1);
+      }
+
+      return { success: false, error: e };
+    }
+  };
+
   try {
-    const { error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) throw error;
+    const result = await attemptSignIn();
+    if (!result.success) {
+      const err = result.error;
+      let msg = err.message || 'Sign-in failed.';
+      if (msg.includes('fetch') || msg.includes('network')) {
+        msg = 'Cannot connect to the server. Check your internet connection and try again. If this persists, the server may be waking up — wait 30 seconds and retry.';
+      } else if (msg.includes('Invalid login') || msg.includes('credentials')) {
+        msg = 'Email or password is incorrect.';
+      }
+      showLoginErr(msg);
+      return;
+    }
 
     // Check if user has MFA factors — if yes, require challenge
     const mfaOK = await handleMfaIfNeeded();
@@ -3674,28 +3709,22 @@ async function submitHandover(submit=true) {
       remarks: get('ho-rem') || null
     };
 
-    const { data: ho, error: e1 } = await sb.from('asset_handovers').insert(payload).select().single();
-    if (e1) { toast(e1.message, 'error'); return; }
-
-    const { data: ref } = await sb.rpc('generate_ref_no', { p_module: 'asset_handover' });
-    const { data: rm, error: e2 } = await sb.from('request_master').insert({
-      ref_no: ref, module: 'asset_handover', module_record_id: ho.id,
+    // Single atomic RPC — does all steps in one round trip (~1-2s vs ~8s)
+    const rpcPayload = {
+      ...payload,
+      requester_id: CURRENT_USER.id,
+      department_id: CURRENT_USER.department_id,
       title: `Asset ${get('ho-htype').replace('_',' ')}: ${get('ho-tag') || get('ho-brand') || 'asset'} → ${toUser?.full_name}`,
-      summary: `${get('ho-type')} · ${get('ho-brand')}`,
-      requester_id: CURRENT_USER.id, department_id: CURRENT_USER.department_id,
-      status: 'draft'
-    }).select().single();
-    if (e2) { toast(e2.message, 'error'); return; }
+      summary: `${get('ho-type')} · ${get('ho-brand')}`
+    };
 
-    await sb.from('asset_handovers').update({ request_id: rm.id }).eq('id', ho.id);
-    await sb.from('request_history').insert({ request_id: rm.id, actor_id: CURRENT_USER.id, action: 'created', to_status: 'draft' });
+    const { data: result, error: rpcErr } = await sb.rpc('submit_asset_handover_fast', {
+      p_payload: rpcPayload,
+      p_submit: submit
+    });
+    if (rpcErr) { toast(rpcErr.message, 'error'); return; }
 
-    if (submit) {
-      const { error: e3 } = await sb.rpc('submit_request', { p_request_id: rm.id });
-      if (e3) { toast(e3.message, 'error'); return; }
-      toast(`${ref} submitted`, 'success');
-    } else toast(`${ref} saved`, 'success');
-
+    toast(`${result.ref_no} ${submit ? 'submitted' : 'saved'}`, 'success');
     await refreshBadges();
     route('my-requests');
   } finally {
@@ -3844,7 +3873,7 @@ async function renderAssetsRegistry() {
       </select>
       <input id="afSearch" placeholder="Search tag, serial, brand, owner…" />
       <span class="count" id="afCount">${(assets||[]).length} assets</span>
-      ${canWrite ? `<button class="btn ok btn-sm" id="btnNewAsset" style="margin-left:8px">+ Add Asset</button>` : ''}
+      ${canWrite ? `<button class="btn ok btn-sm" id="btnNewAsset" style="margin-left:8px">+ Add Asset</button><button class="btn secondary btn-sm" id="btnAssetBulk" style="margin-left:6px">⬆ Bulk Upload</button>` : ''}
     </div>
     <div class="panel"><div class="panel-body" id="astList">
       ${renderAssetRowsHeader()}
@@ -3871,6 +3900,7 @@ async function renderAssetsRegistry() {
   ['afType','afSearch'].forEach(id => $('#'+id).addEventListener('input', apply));
 
   if (canWrite) $('#btnNewAsset').addEventListener('click', () => openAssetEditor(null));
+  if (canWrite && $('#btnAssetBulk')) $('#btnAssetBulk').addEventListener('click', () => openBulkUpload('asset'));
 }
 
 function renderAssetRowsHeader() {
@@ -4016,7 +4046,7 @@ async function renderLicenses() {
       </select>
       <input id="lfSearch" placeholder="Search name, vendor, contract…" />
       <span class="count" id="lfCount">${total} licenses</span>
-      ${canWrite ? `<button class="btn ok btn-sm" data-goto="licenses-new" style="margin-left:8px">+ Add License</button>` : ''}
+      ${canWrite ? `<button class="btn ok btn-sm" data-goto="licenses-new" style="margin-left:8px">+ Add License</button><button class="btn secondary btn-sm" id="btnLicBulk" style="margin-left:6px">⬆ Bulk Upload</button>` : ''}
     </div>
 
     <div class="panel"><div class="panel-body" id="licList">
@@ -4045,6 +4075,7 @@ async function renderLicenses() {
     wireLicRows();
   };
   ['lfType','lfStatus','lfSearch'].forEach(id => $('#'+id).addEventListener('input', apply));
+  if ($('#btnLicBulk')) $('#btnLicBulk').addEventListener('click', () => openBulkUpload('license'));
 }
 
 function renderLicRowsHeader() {
@@ -4288,7 +4319,8 @@ async function renderVendors() {
       <input id="vnfSearch" placeholder="Search contract, vendor, system…" />
       <span class="count" id="vnfCount">${(contracts||[]).length} contracts</span>
       ${canWrite ? `<button class="btn ok btn-sm" id="btnNewContract" style="margin-left:8px">+ New Contract</button>
-                    <button class="btn secondary btn-sm" id="btnNewVendor">+ Vendor</button>` : ''}
+                    <button class="btn secondary btn-sm" id="btnContractBulk" style="margin-left:6px">⬆ Bulk Contracts</button>
+                    <button class="btn secondary btn-sm" id="btnNewVendor">+ Vendor</button><button class="btn secondary btn-sm" id="btnVendorBulk" style="margin-left:6px">⬆ Bulk Vendors</button>` : ''}
     </div>
 
     <div class="panel"><div class="panel-body" id="vnList">
@@ -4316,7 +4348,10 @@ async function renderVendors() {
 
   if (canWrite) {
     $('#btnNewContract').addEventListener('click', () => openContractEditor(null, vendors));
+  if ($('#btnContractBulk')) $('#btnContractBulk').addEventListener('click', () => openBulkUpload('vendor_contract'));
+  if ($('#btnVendorBulk')) $('#btnVendorBulk').addEventListener('click', () => openBulkUpload('vendor'));
     $('#btnNewVendor').addEventListener('click', () => openVendorEditor(null));
+  if ($('#btnVendorBulk')) $('#btnVendorBulk').addEventListener('click', () => openBulkUpload('vendor'));
   }
 }
 
@@ -5688,15 +5723,18 @@ function hideBootSplash() {
   if (splash) splash.style.display = 'none';
 }
 
-// Fallback: if something hangs, force-hide the splash after 8 seconds
+// Fallback: if something truly hangs, force-hide splash after 30 seconds
+// Increased from 8s because MFA challenge + cold-start Supabase can take 10-15s
+let bootstrapComplete = false;
 const bootTimeout = setTimeout(() => {
+  if (bootstrapComplete) return;  // bootstrap already finished, don't interfere
   console.warn('[FFC] Boot timeout reached — forcing login screen');
   hideBootSplash();
   if (!CURRENT_USER) {
     $('#loginScreen').style.display = 'grid';
     $('#app').classList.remove('show');
   }
-}, 8000);
+}, 30000);  // 30 seconds — generous enough for MFA + cold start
 
 // On page load / refresh — check session and route accordingly
 (async () => {
@@ -5723,6 +5761,7 @@ const bootTimeout = setTimeout(() => {
       console.log('[FFC] Valid session found, bootstrapping…');
       try {
         await bootstrap();
+        bootstrapComplete = true;
         console.log('[FFC] Bootstrap complete');
       } catch(e) {
         console.error('[FFC] Bootstrap threw:', e);
@@ -5734,15 +5773,498 @@ const bootTimeout = setTimeout(() => {
     } else {
       console.log('[FFC] No session, showing login');
       setStatus('No session, redirecting…');
+      bootstrapComplete = true;
       $('#loginScreen').style.display = 'grid';
       hideBootSplash();
     }
   } catch(e) {
     console.error('[FFC] Top-level boot failure:', e);
     setStatus('Boot failed: ' + (e?.message || e));
+    bootstrapComplete = true;
     $('#loginScreen').style.display = 'grid';
     hideBootSplash();
   } finally {
+    bootstrapComplete = true;
     clearTimeout(bootTimeout);
   }
 })();
+
+// =============================================================================
+// BULK CSV UPLOAD — Licenses, Assets, Vendors, Vendor Contracts
+// =============================================================================
+
+// CSV template definitions — what columns each module expects
+const CSV_TEMPLATES = {
+
+  license: {
+    label: 'License Tracker',
+    filename: 'FFC_License_Template.csv',
+    columns: [
+      'item_code','item_name','item_type','vendor',
+      'contract_number','po_number','quantity','unit_cost','total_cost','currency',
+      'start_date','expiry_date','last_renewed_on','next_review_date',
+      'payment_frequency','criticality','status','auto_renew',
+      'notes'
+    ],
+    required: ['item_code','item_name','item_type','vendor','start_date','expiry_date'],
+    enums: {
+      item_type: ['software_license','saas_subscription','domain','ssl_certificate','cloud_service','support_contract','maintenance_contract','antivirus','backup_subscription','hosting','other'],
+      payment_frequency: ['one_time','monthly','quarterly','semi_annual','annual','biennial','triennial'],
+      criticality: ['low','medium','high','critical'],
+      status: ['active','expiring_soon','renewal_in_progress','renewed','expired','cancelled','archived'],
+      auto_renew: ['true','false']
+    },
+    sample: [
+      'LIC-2026-001,Microsoft 365 Business,saas_subscription,Microsoft,EA-123456,PO-2026-001,300,45,13500,AED,2026-01-01,2026-12-31,2025-12-15,2026-11-01,annual,critical,active,false,Enterprise Agreement',
+      'LIC-2026-002,Fortinet FortiGuard,support_contract,Fortinet,FG-SUP-789,,1,8500,8500,AED,2026-03-01,2027-02-28,,,annual,high,active,true,UTM protection bundle'
+    ]
+  },
+
+  asset: {
+    label: 'Asset Registry',
+    filename: 'FFC_Asset_Template.csv',
+    columns: [
+      'asset_tag','serial_number','asset_type','brand','model',
+      'specifications','purchase_date','purchase_cost','currency',
+      'warranty_expiry','current_owner_email','current_location',
+      'current_condition','is_retired','notes'
+    ],
+    required: ['asset_tag','asset_type'],
+    enums: {
+      asset_type: ['laptop','desktop','monitor','phone','tablet','printer','scanner','network_device','server','ups','docking_station','headset','keyboard_mouse','accessory','sim_card','other'],
+      current_condition: ['new','good','fair','damaged','lost','retired'],
+      is_retired: ['true','false']
+    },
+    sample: [
+      'FFC-LPT-001,SN123456789,laptop,Dell,Latitude 5540,Intel i7 16GB 512GB SSD,2024-03-15,4500,AED,2027-03-15,satham@freshfruitscompany.com,Head Office,good,false,Primary work laptop',
+      'FFC-SRV-001,SRV987654321,server,HP,ProLiant DL380 G10,Xeon 64GB 2x1TB RAID,2023-01-10,25000,AED,2026-01-10,,Server Room,good,false,Primary Hyper-V host'
+    ]
+  },
+
+  vendor: {
+    label: 'Vendors',
+    filename: 'FFC_Vendor_Template.csv',
+    columns: [
+      'code','name','category','service_type','website','address','country',
+      'account_manager_name','account_manager_email','account_manager_phone',
+      'support_email','support_phone','support_portal_url','is_active','notes'
+    ],
+    required: ['code','name'],
+    enums: {
+      is_active: ['true','false']
+    },
+    sample: [
+      'VND-001,Technowave International,network,support,https://technowave.ae,Dubai Internet City,UAE,Ahmed Al-Rashid,ahmed@technowave.ae,+971501234567,support@technowave.ae,+97143456789,https://portal.technowave.ae,true,ESL/Zkong vendor',
+      'VND-002,Bespin Global,cloud,consulting,https://bespinglobal.com,DIFC Dubai,UAE,Omar El Hallab,omar@bespinglobal.com,+971551234567,support@bespinglobal.com,+97143456780,,true,Microsoft licensing partner'
+    ]
+  },
+
+  vendor_contract: {
+    label: 'Vendor Contracts (AMC)',
+    filename: 'FFC_VendorContract_Template.csv',
+    columns: [
+      'vendor_code','contract_code','contract_title','contract_number',
+      'service_covered','start_date','end_date','renewal_reminder_days',
+      'sla_response_time','sla_resolution_time','support_hours',
+      'cost','currency','payment_frequency','po_number','covered_systems','notes'
+    ],
+    required: ['vendor_code','contract_code','contract_title','start_date','end_date'],
+    enums: {
+      support_hours: ['24x7','business_hours','nbd','mon_to_fri_9_5','mon_to_sat_9_6','custom'],
+      payment_frequency: ['one_time','monthly','quarterly','semi_annual','annual','biennial','triennial']
+    },
+    sample: [
+      'VND-001,AMC-2026-001,Technowave Network Support AMC,TW-AMC-2026-089,Network switches and APs maintenance,2026-01-01,2026-12-31,45,4 hours,1 business day,business_hours,18000,AED,annual,PO-AMC-001,Aruba switches|Aruba APs,Annual maintenance contract',
+      'VND-002,AMC-2026-002,Microsoft 365 Support,MSFT-EA-2026,M365 enterprise support,2026-01-01,2026-12-31,60,2 hours,4 hours,24x7,5000,AED,annual,PO-AMC-002,Microsoft 365|Azure AD,Premier support'
+    ]
+  }
+};
+
+// Download a CSV template file
+function downloadCSVTemplate(type) {
+  const tpl = CSV_TEMPLATES[type];
+  if (!tpl) return;
+
+  const header = tpl.columns.join(',');
+  const rows = tpl.sample.join('\n');
+  const content = `${header}\n${rows}`;
+
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = tpl.filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Parse CSV text → array of objects
+function parseCSV(text) {
+  const lines = text.trim().split('\n').filter(l => l.trim());
+  if (lines.length < 2) return { headers: [], rows: [], error: 'CSV has no data rows' };
+
+  const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, '').toLowerCase());
+  const rows = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    // Handle quoted fields with commas inside
+    const values = [];
+    let current = '';
+    let inQuotes = false;
+    for (const char of lines[i]) {
+      if (char === '"') { inQuotes = !inQuotes; }
+      else if (char === ',' && !inQuotes) { values.push(current.trim()); current = ''; }
+      else { current += char; }
+    }
+    values.push(current.trim());
+
+    const row = {};
+    headers.forEach((h, idx) => {
+      row[h] = (values[idx] || '').replace(/^"|"$/g, '').trim();
+    });
+    rows.push(row);
+  }
+
+  return { headers, rows, error: null };
+}
+
+// Validate a parsed row against template rules
+function validateCSVRow(row, tpl, rowNum) {
+  const errors = [];
+
+  // Check required fields
+  tpl.required.forEach(col => {
+    if (!row[col]) errors.push(`Row ${rowNum}: "${col}" is required`);
+  });
+
+  // Check enum values
+  Object.entries(tpl.enums || {}).forEach(([col, allowed]) => {
+    const val = row[col]?.toLowerCase();
+    if (val && !allowed.includes(val)) {
+      errors.push(`Row ${rowNum}: "${col}" must be one of: ${allowed.join(', ')}`);
+    }
+  });
+
+  // Check date format
+  ['start_date','expiry_date','end_date','purchase_date','warranty_expiry',
+   'last_renewed_on','next_review_date'].forEach(col => {
+    const val = row[col];
+    if (val && !/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+      errors.push(`Row ${rowNum}: "${col}" must be YYYY-MM-DD format (got: ${val})`);
+    }
+  });
+
+  return errors;
+}
+
+// Open the bulk upload modal
+async function openBulkUpload(type) {
+  const tpl = CSV_TEMPLATES[type];
+  if (!tpl) return;
+
+  const existing = document.getElementById('bulkUploadModal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'bulkUploadModal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px';
+
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:32px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;font-family:Inter,sans-serif">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div>
+          <h2 style="font-size:20px;font-weight:600;margin:0;color:#1a2e0f">Bulk Upload — ${tpl.label}</h2>
+          <p style="font-size:12.5px;color:#7a8775;margin:4px 0 0">Upload a CSV file to import multiple records at once</p>
+        </div>
+        <button id="bulkClose" style="background:none;border:none;font-size:24px;cursor:pointer;color:#7a8775;line-height:1">×</button>
+      </div>
+
+      <!-- Step 1: Download template -->
+      <div style="background:#f8faf3;border:1px solid #e3ebd8;border-radius:8px;padding:16px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:600;color:#3D7A18;margin-bottom:6px">Step 1 — Download the template</div>
+        <p style="font-size:12px;color:#5a6b51;margin-bottom:10px">Fill in the CSV file with your data. Don't change the column headers.</p>
+        <button id="btnDownloadTpl" class="btn secondary btn-sm">⬇ Download CSV Template</button>
+      </div>
+
+      <!-- Column reference -->
+      <details style="margin-bottom:16px">
+        <summary style="font-size:12px;color:#5BA829;cursor:pointer;font-weight:600;padding:8px 0">📋 Column reference & allowed values</summary>
+        <div style="background:#f8faf3;border-radius:6px;padding:12px;margin-top:8px;font-size:11px;font-family:monospace;line-height:1.8">
+          <div style="color:#3D7A18;font-weight:700;margin-bottom:6px">REQUIRED: ${tpl.required.join(', ')}</div>
+          <div style="color:#5a6b51;margin-bottom:8px">ALL COLUMNS: ${tpl.columns.join(', ')}</div>
+          ${Object.entries(tpl.enums||{}).map(([col, vals]) =>
+            `<div><b style="color:#3D7A18">${col}:</b> ${vals.join(' | ')}</div>`
+          ).join('')}
+          <div style="color:#7a8775;margin-top:8px">Dates must be YYYY-MM-DD format (e.g. 2026-04-19)</div>
+          ${type === 'vendor_contract' ? '<div style="color:#7a8775">covered_systems: separate multiple with pipe | (e.g. SAP|NetSuite|FortiGate)</div>' : ''}
+        </div>
+      </details>
+
+      <!-- Step 2: Upload file -->
+      <div style="background:#f8faf3;border:1px solid #e3ebd8;border-radius:8px;padding:16px;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:600;color:#3D7A18;margin-bottom:6px">Step 2 — Upload your filled CSV</div>
+        <input type="file" id="bulkFileInput" accept=".csv" style="font-size:12.5px;width:100%" />
+      </div>
+
+      <!-- Preview area -->
+      <div id="bulkPreview" style="display:none;margin-bottom:16px">
+        <div style="font-size:13px;font-weight:600;color:#3D7A18;margin-bottom:8px">Step 3 — Review before importing</div>
+        <div id="bulkPreviewContent"></div>
+      </div>
+
+      <!-- Error area -->
+      <div id="bulkErrors" style="display:none;background:#fff5f5;border:1px solid #fca5a5;border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:#7f1d1d;line-height:1.8"></div>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button id="bulkCancelBtn" class="btn secondary">Cancel</button>
+        <button id="bulkImportBtn" class="btn ok" style="display:none">⬆ Import Records</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  // Wire buttons
+  document.getElementById('bulkClose').addEventListener('click', () => modal.remove());
+  document.getElementById('bulkCancelBtn').addEventListener('click', () => modal.remove());
+  document.getElementById('btnDownloadTpl').addEventListener('click', () => downloadCSVTemplate(type));
+
+  // File input handler
+  document.getElementById('bulkFileInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const text = await file.text();
+    const { headers, rows, error } = parseCSV(text);
+
+    if (error) {
+      showBulkErrors([error]);
+      return;
+    }
+
+    // Validate all rows
+    const allErrors = [];
+    rows.forEach((row, idx) => {
+      const errs = validateCSVRow(row, tpl, idx + 2);
+      allErrors.push(...errs);
+    });
+
+    if (allErrors.length > 0) {
+      showBulkErrors(allErrors);
+      document.getElementById('bulkImportBtn').style.display = 'none';
+      return;
+    }
+
+    // Show preview
+    document.getElementById('bulkErrors').style.display = 'none';
+    showBulkPreview(rows, tpl);
+
+    // Store rows for import
+    modal._csvRows = rows;
+    modal._csvType = type;
+    document.getElementById('bulkImportBtn').style.display = '';
+  });
+
+  // Import button
+  document.getElementById('bulkImportBtn').addEventListener('click', async () => {
+    const rows = modal._csvRows;
+    const csvType = modal._csvType;
+    if (!rows || !csvType) return;
+
+    const btn = document.getElementById('bulkImportBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span> Importing…';
+
+    try {
+      const result = await importCSVRows(csvType, rows);
+      modal.remove();
+      toast(`✓ Imported ${result.inserted} records${result.skipped > 0 ? `, ${result.skipped} skipped (duplicates)` : ''}`, 'success', 5000);
+      // Refresh current view
+      route(CURRENT_VIEW);
+    } catch(e) {
+      btn.disabled = false;
+      btn.innerHTML = '⬆ Import Records';
+      showBulkErrors([e.message || 'Import failed']);
+    }
+  });
+}
+
+function showBulkErrors(errors) {
+  const el = document.getElementById('bulkErrors');
+  el.style.display = 'block';
+  el.innerHTML = `<b>⚠ Please fix these errors before importing:</b><br>${errors.slice(0, 20).map(e => `• ${e}`).join('<br>')}${errors.length > 20 ? `<br>…and ${errors.length - 20} more` : ''}`;
+  document.getElementById('bulkPreview').style.display = 'none';
+}
+
+function showBulkPreview(rows, tpl) {
+  const previewEl = document.getElementById('bulkPreview');
+  const contentEl = document.getElementById('bulkPreviewContent');
+  previewEl.style.display = 'block';
+
+  const previewCols = tpl.required.slice(0, 5);
+  contentEl.innerHTML = `
+    <div style="font-size:12px;color:#5a6b51;margin-bottom:8px">
+      <b style="color:#3D7A18">${rows.length} records ready to import.</b>
+      Showing first 5 rows, ${previewCols.length} key columns:
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+        <thead>
+          <tr style="background:#f0f7e8">
+            <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #e3ebd8">#</th>
+            ${previewCols.map(c => `<th style="padding:6px 8px;text-align:left;border-bottom:1px solid #e3ebd8">${c}</th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.slice(0, 5).map((row, idx) => `
+            <tr style="${idx % 2 === 0 ? 'background:#fafcf7' : ''}">
+              <td style="padding:5px 8px;color:#7a8775">${idx + 1}</td>
+              ${previewCols.map(c => `<td style="padding:5px 8px">${escape(row[c] || '—')}</td>`).join('')}
+            </tr>
+          `).join('')}
+          ${rows.length > 5 ? `
+            <tr><td colspan="${previewCols.length + 1}" style="padding:6px 8px;color:#7a8775;font-style:italic;text-align:center">
+              …and ${rows.length - 5} more rows
+            </td></tr>` : ''}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// The actual import logic — sends rows to Supabase
+async function importCSVRows(type, rows) {
+  let inserted = 0, skipped = 0;
+
+  if (type === 'license') {
+    const records = rows.map(r => ({
+      item_code: r.item_code,
+      item_name: r.item_name,
+      item_type: r.item_type,
+      vendor: r.vendor,
+      contract_number: r.contract_number || null,
+      po_number: r.po_number || null,
+      quantity: r.quantity ? parseInt(r.quantity) : 1,
+      unit_cost: r.unit_cost ? parseFloat(r.unit_cost) : null,
+      total_cost: r.total_cost ? parseFloat(r.total_cost) : null,
+      currency: r.currency || 'AED',
+      start_date: r.start_date,
+      expiry_date: r.expiry_date,
+      last_renewed_on: r.last_renewed_on || null,
+      next_review_date: r.next_review_date || null,
+      payment_frequency: r.payment_frequency || 'annual',
+      criticality: r.criticality || 'medium',
+      status: r.status || 'active',
+      auto_renew: r.auto_renew === 'true',
+      notes: r.notes || null
+    }));
+
+    const { data, error } = await sb.from('license_items')
+      .upsert(records, { onConflict: 'item_code', ignoreDuplicates: false })
+      .select();
+    if (error) throw error;
+    inserted = data?.length || records.length;
+  }
+
+  else if (type === 'asset') {
+    // Resolve owner emails to user IDs
+    const emails = [...new Set(rows.map(r => r.current_owner_email).filter(Boolean))];
+    let emailMap = {};
+    if (emails.length > 0) {
+      const { data: users } = await sb.from('profiles')
+        .select('id, email').in('email', emails);
+      (users || []).forEach(u => { emailMap[u.email] = u.id; });
+    }
+
+    const records = rows.map(r => ({
+      asset_tag: r.asset_tag,
+      serial_number: r.serial_number || null,
+      asset_type: r.asset_type,
+      brand: r.brand || null,
+      model: r.model || null,
+      specifications: r.specifications || null,
+      purchase_date: r.purchase_date || null,
+      purchase_cost: r.purchase_cost ? parseFloat(r.purchase_cost) : null,
+      currency: r.currency || 'AED',
+      warranty_expiry: r.warranty_expiry || null,
+      current_owner_id: r.current_owner_email ? (emailMap[r.current_owner_email] || null) : null,
+      current_location: r.current_location || null,
+      current_condition: r.current_condition || 'good',
+      is_retired: r.is_retired === 'true'
+    }));
+
+    const { data, error } = await sb.from('assets')
+      .upsert(records, { onConflict: 'asset_tag', ignoreDuplicates: false })
+      .select();
+    if (error) throw error;
+    inserted = data?.length || records.length;
+  }
+
+  else if (type === 'vendor') {
+    const records = rows.map(r => ({
+      code: r.code,
+      name: r.name,
+      category: r.category || null,
+      service_type: r.service_type || null,
+      website: r.website || null,
+      address: r.address || null,
+      country: r.country || 'UAE',
+      account_manager_name: r.account_manager_name || null,
+      account_manager_email: r.account_manager_email || null,
+      account_manager_phone: r.account_manager_phone || null,
+      support_email: r.support_email || null,
+      support_phone: r.support_phone || null,
+      support_portal_url: r.support_portal_url || null,
+      is_active: r.is_active !== 'false'
+    }));
+
+    const { data, error } = await sb.from('vendors')
+      .upsert(records, { onConflict: 'code', ignoreDuplicates: false })
+      .select();
+    if (error) throw error;
+    inserted = data?.length || records.length;
+  }
+
+  else if (type === 'vendor_contract') {
+    // Resolve vendor codes to IDs
+    const codes = [...new Set(rows.map(r => r.vendor_code).filter(Boolean))];
+    let vendorMap = {};
+    if (codes.length > 0) {
+      const { data: vends } = await sb.from('vendors')
+        .select('id, code').in('code', codes);
+      (vends || []).forEach(v => { vendorMap[v.code] = v.id; });
+    }
+
+    const records = rows.map(r => {
+      const vendorId = vendorMap[r.vendor_code];
+      if (!vendorId) throw new Error(`Vendor code "${r.vendor_code}" not found. Import vendors first.`);
+      return {
+        vendor_id: vendorId,
+        contract_code: r.contract_code,
+        contract_title: r.contract_title,
+        contract_number: r.contract_number || null,
+        service_covered: r.service_covered || null,
+        start_date: r.start_date,
+        end_date: r.end_date,
+        renewal_reminder_days: r.renewal_reminder_days ? parseInt(r.renewal_reminder_days) : 45,
+        sla_response_time: r.sla_response_time || null,
+        sla_resolution_time: r.sla_resolution_time || null,
+        support_hours: r.support_hours || 'business_hours',
+        cost: r.cost ? parseFloat(r.cost) : null,
+        currency: r.currency || 'AED',
+        payment_frequency: r.payment_frequency || 'annual',
+        po_number: r.po_number || null,
+        covered_systems: r.covered_systems ? r.covered_systems.split('|').map(s => s.trim()).filter(Boolean) : null
+      };
+    });
+
+    const { data, error } = await sb.from('vendor_contracts')
+      .upsert(records, { onConflict: 'contract_code', ignoreDuplicates: false })
+      .select();
+    if (error) throw error;
+    inserted = data?.length || records.length;
+  }
+
+  return { inserted, skipped };
+}
