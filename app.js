@@ -649,6 +649,7 @@ async function renderDashboard() {
             <p style="color:var(--muted);font-size:12px;padding:10px 0">Loading…</p>
           </div>
         </div>
+        ${isMgr ? `<div id="dashTeamPresence"></div>` : ''}
       </div>
     </div>
   `;
@@ -765,6 +766,16 @@ async function renderDashboard() {
     $$('[data-open-request]').forEach(b => b.addEventListener('click', () => openRequest(b.dataset.openRequest)));
     $$('[data-open-chk]').forEach(b => b.addEventListener('click', () => openChecklistInstance(b.dataset.openChk)));
     $$('[data-open-onb-task]').forEach(b => b.addEventListener('click', () => openOnbTask(b.dataset.openOnbTask)));
+
+    // Load team presence widget for managers (non-blocking)
+    if (isMgr) {
+      const presenceSlot = $('#dashTeamPresence');
+      if (presenceSlot) {
+        renderTeamPresenceWidget().then(html => {
+          if (presenceSlot) presenceSlot.innerHTML = html;
+        });
+      }
+    }
   });
 
   // ===== PHASE 3: Manager-only queries (fire last, lowest priority) =====
@@ -5571,8 +5582,105 @@ setInterval(() => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && CURRENT_USER) {
     refreshBadges();
+    updatePresence();
   }
 });
+
+// =============================================================================
+// PRESENCE TRACKING — silently update last_seen_at every 2 minutes
+// =============================================================================
+async function updatePresence() {
+  if (!CURRENT_USER) return;
+  try {
+    await sb.from('profiles')
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq('id', CURRENT_USER.id);
+  } catch(e) { /* fail silently — presence is non-critical */ }
+}
+
+// Update presence on load + every 2 minutes while active
+function startPresenceTracking() {
+  updatePresence();
+  setInterval(() => {
+    if (CURRENT_USER && !document.hidden) updatePresence();
+  }, 2 * 60 * 1000);
+
+  // Also ping on any user interaction (mouse move, key press) — debounced
+  let presenceDebounce;
+  const presencePing = () => {
+    clearTimeout(presenceDebounce);
+    presenceDebounce = setTimeout(updatePresence, 30000); // max once per 30s
+  };
+  document.addEventListener('mousemove', presencePing, { passive: true });
+  document.addEventListener('keydown', presencePing, { passive: true });
+}
+
+// Online indicator helper
+function onlineDot(lastSeen, size = 10) {
+  if (!lastSeen) return `<span style="display:inline-block;width:${size}px;height:${size}px;border-radius:50%;background:#64748b;flex-shrink:0" title="Never seen"></span>`;
+  const minsAgo = Math.floor((Date.now() - new Date(lastSeen)) / 60000);
+  const isOnline = minsAgo < 5;
+  const isRecent = minsAgo < 30;
+  const color = isOnline ? '#22c55e' : isRecent ? '#f59e0b' : '#64748b';
+  const label = isOnline ? 'Online now' : minsAgo < 60 ? `${minsAgo}m ago` : minsAgo < 1440 ? `${Math.floor(minsAgo/60)}h ago` : `${Math.floor(minsAgo/1440)}d ago`;
+  return `<span style="display:inline-block;width:${size}px;height:${size}px;border-radius:50%;background:${color};flex-shrink:0;${isOnline?'box-shadow:0 0 0 2px rgba(34,197,94,0.3)':''}" title="${label}"></span>`;
+}
+
+// Team presence widget (shown on dashboard for IT Manager/Admin)
+async function renderTeamPresenceWidget() {
+  const { data: team } = await sb.rpc('get_team_presence');
+  if (!team || !team.length) return '';
+
+  const online = team.filter(u => u.is_online);
+  const offline = team.filter(u => !u.is_online);
+
+  return `
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Team Status</h3>
+        <div class="right">
+          <span style="font-size:11px;color:#22c55e;font-weight:600">${online.length} online</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:6px">${offline.length} offline</span>
+        </div>
+      </div>
+      <div class="panel-body" style="padding:10px 16px">
+        ${team.map(u => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line)">
+            ${onlineDot(u.last_seen_at, 9)}
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:500;color:var(--ink)">${escape(u.full_name)}</div>
+              <div style="font-size:11px;color:var(--muted)">${escape(u.designation||u.role_code||'—')}</div>
+            </div>
+            <div style="font-size:11px;color:var(--muted);font-family:monospace;text-align:right">
+              ${u.is_online
+                ? '<span style="color:#22c55e;font-weight:600">Online</span>'
+                : u.last_seen_at
+                  ? escape((() => { const m = Math.floor((Date.now() - new Date(u.last_seen_at)) / 60000); return m < 60 ? m+'m ago' : m < 1440 ? Math.floor(m/60)+'h ago' : Math.floor(m/1440)+'d ago'; })())
+                  : 'Never'
+              }
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// Update sidebar user card with online dot
+function updateSidebarPresence() {
+  const who = document.querySelector('.user-card .who');
+  if (!who || !CURRENT_USER) return;
+  // Add green online dot to user card
+  const existing = document.getElementById('sidebarOnlineDot');
+  if (!existing) {
+    const dot = document.createElement('span');
+    dot.id = 'sidebarOnlineDot';
+    dot.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,0.3);margin-left:4px;vertical-align:middle';
+    dot.title = 'You are online';
+    const nameSpan = who.querySelector('span');
+    if (nameSpan) nameSpan.appendChild(dot);
+  }
+}
 
 // =============================================================================
 // LIVE IT SECURITY NEWS TICKER (Reddit-based, public JSON API, no auth)
@@ -5717,6 +5825,7 @@ function initNewsTicker() {
 // Start ticker once app is visible (after bootstrap succeeds)
 // Using setTimeout to ensure DOM is ready
 setTimeout(() => { if (CURRENT_USER) initNewsTicker(); }, 1500);
+setTimeout(() => { if (CURRENT_USER) { startPresenceTracking(); updateSidebarPresence(); } }, 1000);
 // Also re-init after any login
 sb.auth.onAuthStateChange((event) => {
   if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
