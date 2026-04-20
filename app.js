@@ -6946,8 +6946,11 @@ async function openProjectEditor(projectId) {
   const proj = projectId ? (await sb.from('it_projects').select('*').eq('id', projectId).single()).data : null;
   const p = proj || {};
 
+  // Open the drawer
+  $('#drawerBg').classList.add('show');
   $('#drawerTitle').textContent = projectId ? 'Edit Project' : 'New Project';
   $('#drawerRef').textContent = projectId ? p.project_code : 'New';
+  $('#drawerBody').innerHTML = '<div class="loading">Loading…</div>';
 
   $('#drawerBody').innerHTML = `
     <div class="form-section">
