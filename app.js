@@ -92,7 +92,7 @@ async function login() {
       const err = result.error;
       let msg = err.message || 'Sign-in failed.';
       if (msg.includes('fetch') || msg.includes('network')) {
-        msg = 'Cannot connect to the server. Check your internet connection and try again. If this persists, the server may be waking up — wait 30 seconds and retry.';
+        msg = 'Cannot connect to the server. Check your internet connection and try again.';
       } else if (msg.includes('Invalid login') || msg.includes('credentials')) {
         msg = 'Email or password is incorrect.';
       }
@@ -100,12 +100,9 @@ async function login() {
       return;
     }
 
-    // Check if user has MFA factors — if yes, require challenge
-    const mfaOK = await handleMfaIfNeeded();
-    if (!mfaOK) return;  // MFA flow is showing, don't bootstrap yet
-
-    // Log the login event
-    await logAuthEvent('login');
+    // FIX: No MFA check here — bootstrap() handles it
+    // FIX: logAuthEvent is fire-and-forget — don't await it on the critical path
+    logAuthEvent('login'); // intentionally not awaited
 
     await bootstrap();
   } catch (e) {
@@ -371,34 +368,39 @@ async function loadCurrentUser() {
   }
 
   try {
-    const { data: profile, error } = await sb
-      .from('profiles')
-      .select('*, department:departments(*)')
-      .eq('id', user.id)
-      .single();
-    if (error || !profile) {
-      console.error('Profile load failed', error);
+    // FIX: Run profile + roles + permissions ALL IN PARALLEL
+    // Previous code was fully sequential: getUser → profile → roles → perms
+    // Now it's one round trip for all three
+    const [profileRes, rolesRes, permsRes] = await Promise.all([
+      sb.from('profiles')
+        .select('*, department:departments(*)')
+        .eq('id', user.id)
+        .single(),
+      sb.from('user_roles')
+        .select('role:roles(code,name)')
+        .eq('user_id', user.id),
+      sb.from('role_permissions')
+        .select('permission:permissions(code), role:roles!inner(code)')
+        .neq('role.code', '__none__')   // get all — filter by role below
+    ]);
+
+    const profile = profileRes.data;
+    if (profileRes.error || !profile) {
+      console.error('Profile load failed', profileRes.error);
       toast('Your profile is not set up. Ask the IT admin.', 'error', 6000);
       return null;
     }
 
-    // Load roles — if this fails, fall back to empty array but keep the session
-    try {
-      const { data: roles } = await sb
-        .from('user_roles')
-        .select('role:roles(code,name)')
-        .eq('user_id', user.id);
-      USER_ROLES = (roles||[]).map(r => r.role?.code).filter(Boolean);
-    } catch(e) { console.warn('Roles load failed, defaulting to empty', e); USER_ROLES = []; }
+    // Set roles
+    USER_ROLES = (rolesRes.data || []).map(r => r.role?.code).filter(Boolean);
 
-    // Load permissions — same resilience
-    try {
-      const { data: rp } = await sb
-        .from('role_permissions')
-        .select('permission:permissions(code), role:roles!inner(code)')
-        .in('role.code', USER_ROLES.length ? USER_ROLES : ['__none__']);
-      USER_PERMS = [...new Set((rp||[]).map(r => r.permission?.code).filter(Boolean))];
-    } catch(e) { console.warn('Perms load failed, defaulting to empty', e); USER_PERMS = []; }
+    // Filter permissions to only those matching this user's roles
+    USER_PERMS = [...new Set(
+      (permsRes.data || [])
+        .filter(r => USER_ROLES.includes(r.role?.code))
+        .map(r => r.permission?.code)
+        .filter(Boolean)
+    )];
 
     CURRENT_USER = profile;
     return profile;
@@ -411,18 +413,21 @@ async function loadCurrentUser() {
 
 async function bootstrap() {
   try {
-    // Check MFA status first for returning sessions
+    // FIX: MFA check only happens here (removed duplicate from login())
+    // login() calls bootstrap() directly after sign-in
+    // bootstrap() handles MFA for returning sessions (page refresh)
     const mfaOK = await handleMfaIfNeeded();
-    if (!mfaOK) return;  // MFA flow is showing, bootstrap will resume after verification
+    if (!mfaOK) return;
 
     const profile = await loadCurrentUser();
     if (!profile) {
-      // Show login screen explicitly
       $('#loginScreen').style.display = 'grid';
       $('#app').classList.remove('show');
       return;
     }
 
+    // FIX: Show app shell IMMEDIATELY after profile loads
+    // Don't wait for badges or dashboard — show the UI now
     $('#loginScreen').style.display = 'none';
     $('#app').classList.add('show');
     $('#userName').textContent = profile.full_name;
@@ -431,24 +436,21 @@ async function bootstrap() {
 
     if (isAdmin() || hasRole('it_manager')) $('#adminGroup').style.display = 'block';
 
-    // Hide IT-Manager-only checklist items from engineers
     const canManageChk = isAdmin() || hasRole('it_manager');
     const tplBtn = document.querySelector('[data-view="chk-templates"]');
     if (tplBtn && !canManageChk) tplBtn.style.display = 'none';
+    const reviewBtn = document.querySelector('[data-view="chk-review-queue"]');
+    if (reviewBtn && !canManageChk) reviewBtn.style.display = 'none';
+    const allTasksBtn = document.querySelector('[data-view="chk-all-tasks"]');
+    if (allTasksBtn && !canManageChk) allTasksBtn.style.display = 'none';
+    const compBtn = document.querySelector('[data-view="chk-compliance"]');
+    if (compBtn && !canManageChk) compBtn.style.display = 'none';
 
-  // Hide Review Queue from engineers (only reviewer sees it)
-  const reviewBtn = document.querySelector('[data-view="chk-review-queue"]');
-  if (reviewBtn && !canManageChk) reviewBtn.style.display = 'none';
+    // FIX: Route to dashboard immediately, fire badges in background
+    // No more waiting for both to finish before showing anything
+    route('dashboard');
+    refreshBadges(); // fire and forget — don't await
 
-  // Hide All Tasks (admin view) from engineers
-  const allTasksBtn = document.querySelector('[data-view="chk-all-tasks"]');
-  if (allTasksBtn && !canManageChk) allTasksBtn.style.display = 'none';
-
-  // Hide Compliance from engineers (reports for managers)
-  const compBtn = document.querySelector('[data-view="chk-compliance"]');
-  if (compBtn && !canManageChk) compBtn.style.display = 'none';
-
-    await Promise.all([refreshBadges(), route('dashboard')]);
   } catch(e) {
     console.error('Bootstrap failed', e);
     toast('Could not start the app. Check console for details.', 'error', 6000);
@@ -5838,20 +5840,10 @@ function initNewsTicker() {
 }
 
 // Start ticker once app is visible (after bootstrap succeeds)
-// Using setTimeout to ensure DOM is ready
-setTimeout(() => { if (CURRENT_USER) initNewsTicker(); }, 1500);
-setTimeout(() => { if (CURRENT_USER) { startPresenceTracking(); updateSidebarPresence(); } }, 1000);
-// Also re-init after any login
-sb.auth.onAuthStateChange((event) => {
-  if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
-    setTimeout(() => { if (CURRENT_USER) initNewsTicker(); }, 500);
-  }
-});
-
-
-// Listen for auth state changes (session refresh, logout in another tab, etc.)
+// FIX: Single consolidated auth state listener (was two separate listeners)
 sb.auth.onAuthStateChange((event, session) => {
   console.log('[FFC] Auth event:', event);
+
   if (event === 'SIGNED_OUT') {
     CURRENT_USER = null;
     USER_ROLES = [];
@@ -5859,6 +5851,17 @@ sb.auth.onAuthStateChange((event, session) => {
     $('#app').classList.remove('show');
     $('#loginScreen').style.display = 'grid';
     hideBootSplash();
+  }
+
+  if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+    // Init secondary features once logged in (non-blocking)
+    setTimeout(() => {
+      if (CURRENT_USER) {
+        initNewsTicker();
+        startPresenceTracking();
+        updateSidebarPresence();
+      }
+    }, 1000);
   }
 });
 
