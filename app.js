@@ -3753,7 +3753,7 @@ async function submitHandover(submit=true) {
       issue_date: get('ho-issue') || null,
       expected_return_date: get('ho-expreturn') || null,
       condition_at_issue: get('ho-cond') || 'good',
-      accessories_included: accessories.length ? accessories : null,
+      accessories_included: accessories.length ? accessories.join(',') : null,
       it_engineer_id: CURRENT_USER.id,
       remarks: get('ho-rem') || null
     };
