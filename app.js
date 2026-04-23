@@ -3644,7 +3644,7 @@ async function submitAccess(submit=true) {
 async function renderNewHandover() {
   const [{ data: users }, { data: assetList }] = await Promise.all([
     sb.from('profiles').select('id, full_name, email').eq('is_active', true).order('full_name'),
-    sb.from('assets').select('id, asset_tag, asset_type, brand, model, serial_number, current_owner_id').eq('is_retired', false).order('asset_tag').limit(300)
+    sb.from('assets').select('id, asset_tag, asset_type, brand, model, serial_number, current_owner_id').eq('is_retired', false).order('asset_tag').limit(1000)
   ]);
 
   $('#viewContent').innerHTML = `
@@ -3911,22 +3911,37 @@ async function openOnbTask(taskId) {
 // ---------------- ASSETS REGISTRY ----------------
 async function renderAssetsRegistry() {
   const canWrite = isAdmin() || hasRole('it_manager') || hasRole('it_support') || hasRole('sysadmin') || hasRole('helpdesk');
-  const { data: assets } = await sb.from('assets')
-    .select('*, owner:profiles!assets_current_owner_id_fkey(full_name)')
-    .order('asset_tag').limit(300);
+
+  // Get total count separately so we always show the real number
+  const [assetsRes, countRes] = await Promise.all([
+    sb.from('assets')
+      .select('*, owner:profiles!assets_current_owner_id_fkey(full_name)')
+      .order('asset_tag')
+      .limit(1000),  // raised from 300 to 1000
+    sb.from('assets').select('id', { count: 'exact', head: true })
+  ]);
+
+  const assets = assetsRes.data || [];
+  const totalCount = countRes.count || assets.length;
+  const showing = assets.length < totalCount ? ` (showing ${assets.length} of ${totalCount})` : ` (${totalCount} total)`;
 
   $('#viewContent').innerHTML = `
     <div class="filter-bar">
       <select id="afType"><option value="">All types</option>
         ${ASSET_TYPES.map(t => `<option value="${t}">${t.replace(/_/g,' ')}</option>`).join('')}
       </select>
+      <select id="afRetired">
+        <option value="active">Active only</option>
+        <option value="all">All incl. retired</option>
+        <option value="retired">Retired only</option>
+      </select>
       <input id="afSearch" placeholder="Search tag, serial, brand, owner…" />
-      <span class="count" id="afCount">${(assets||[]).length} assets</span>
+      <span class="count" id="afCount">${assets.length} assets${totalCount > assets.length ? ` <span style="color:var(--muted);font-size:10.5px">(${totalCount} total in DB)</span>` : ''}</span>
       ${canWrite ? `<button class="btn ok btn-sm" id="btnNewAsset" style="margin-left:8px">+ Add Asset</button><button class="btn secondary btn-sm" id="btnAssetBulk" style="margin-left:6px">⬆ Bulk Upload</button>` : ''}
     </div>
     <div class="panel"><div class="panel-body" id="astList">
       ${renderAssetRowsHeader()}
-      ${(assets||[]).length ? (assets||[]).map(assetRow).join('') : emptyRow('No assets registered yet')}
+      ${assets.length ? assets.map(assetRow).join('') : emptyRow('No assets registered yet')}
     </div></div>
   `;
   wireAssetRows();
@@ -3934,8 +3949,10 @@ async function renderAssetsRegistry() {
   const apply = () => {
     const t = $('#afType').value;
     const q = $('#afSearch').value.toLowerCase().trim();
-    const f = (assets||[]).filter(a =>
+    const retired = $('#afRetired').value;
+    const f = assets.filter(a =>
       (!t || a.asset_type === t) &&
+      (retired === 'all' || (retired === 'retired' ? a.is_retired : !a.is_retired)) &&
       (!q || (a.asset_tag||'').toLowerCase().includes(q)
           || (a.serial_number||'').toLowerCase().includes(q)
           || (a.brand||'').toLowerCase().includes(q)
@@ -3946,7 +3963,7 @@ async function renderAssetsRegistry() {
     $('#afCount').textContent = `${f.length} assets`;
     wireAssetRows();
   };
-  ['afType','afSearch'].forEach(id => $('#'+id).addEventListener('input', apply));
+  ['afType','afSearch','afRetired'].forEach(id => $('#'+id).addEventListener('input', apply));
 
   if (canWrite) $('#btnNewAsset').addEventListener('click', () => openAssetEditor(null));
   if (canWrite && $('#btnAssetBulk')) $('#btnAssetBulk').addEventListener('click', () => openBulkUpload('asset'));
@@ -4039,10 +4056,18 @@ async function openAssetEditor(assetId) {
       if (assetId) {
         ({ error: err } = await sb.from('assets').update(payload).eq('id', assetId));
       } else {
-        ({ error: err } = await sb.from('assets').insert(payload));
+        const { error: insertErr, data: inserted } = await sb.from('assets').insert(payload).select().single();
+        err = insertErr;
+        if (!insertErr && !inserted) {
+          err = { message: 'Insert returned no data — possible RLS policy blocking. Run 16_combined_fix.sql.' };
+        }
       }
-      if (err) { toast(err.message, 'error'); return; }
-      toast(assetId ? 'Asset updated' : 'Asset created', 'success');
+      if (err) {
+        console.error('Asset save error:', err);
+        toast(`Save failed: ${err.message}`, 'error', 8000);
+        return;
+      }
+      toast(assetId ? 'Asset updated' : 'Asset created ✓', 'success');
       closeDrawer();
       route('assets-registry');
     });
