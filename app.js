@@ -1,4 +1,4 @@
-// FFC IT PORTAL - Enterprise Workflow Frontend
+// FFC IT PORTAL - Enterprise Workflow Frontend - v2026-04-24-fix5
 // Pure ES module. Talks to Supabase via @supabase/supabase-js CDN.
 
 const { createClient } = window.supabase;
@@ -7169,57 +7169,47 @@ async function loadAgentContext() {
 
   const [
     openCRs, pendingApprovals, overdueChk, licExpiring,
-    openCapas, drOverdue, vendorExpiring, openProjects
+    openCapas, vendorExpiring, openProjects, teamPresence
   ] = await Promise.all([
     safe(() => sb.from('request_master').select('ref_no,title,status')
       .eq('module','change_request').in('status',['submitted','pending_approval','approved','scheduled'])
-      .order('created_at',{ascending:false}).limit(10)),
+      .order('created_at',{ascending:false}).limit(5)),
     safe(() => sb.from('request_approvals').select('request:request_master(ref_no,title,status),due_at')
-      .eq('approver_id',CURRENT_USER.id).eq('decision','pending').limit(10)),
+      .eq('approver_id',CURRENT_USER.id).eq('decision','pending').limit(5)),
     safe(() => sb.from('checklist_instances').select('instance_code,name_snapshot,due_at')
-      .in('status',['overdue','escalated']).order('due_at',{ascending:true}).limit(10)),
-    safe(() => sb.from('license_items').select('item_code,item_name,vendor,expiry_date,criticality')
-      .lte('expiry_date',in30).order('expiry_date',{ascending:true}).limit(10)),
+      .in('status',['overdue','escalated']).order('due_at',{ascending:true}).limit(5)),
+    safe(() => sb.from('license_items').select('item_name,vendor,expiry_date')
+      .lte('expiry_date',in30).order('expiry_date',{ascending:true}).limit(5)),
     safe(() => sb.from('capas').select('capa_code,title,severity,status,target_date')
-      .in('status',['open','assigned','in_progress','overdue']).order('target_date',{ascending:true}).limit(10)),
-    safe(() => sb.from('dr_services').select('service_name,next_test_due,rto_hours,rpo_hours')
-      .eq('is_active',true).limit(10)),
+      .in('status',['open','assigned','in_progress','overdue']).order('target_date',{ascending:true}).limit(5)),
     safe(() => sb.from('vendor_contracts').select('contract_title,end_date,vendor:vendors(name)')
-      .lte('end_date',in30).order('end_date',{ascending:true}).limit(5)),
-    safe(() => sb.from('it_projects').select('name,status,rag,progress_pct,planned_end')
-      .in('status',['planning','in_progress']).order('planned_end',{ascending:true}).limit(10))
+      .lte('end_date',in30).order('end_date',{ascending:true}).limit(3)),
+    safe(() => sb.from('it_projects').select('name,status,progress_pct,planned_end')
+      .in('status',['planning','in_progress']).order('planned_end',{ascending:true}).limit(5)),
+    safe(() => sb.from('profiles').select('full_name,last_seen_at,designation')
+      .eq('is_active',true).order('last_seen_at',{ascending:false}).limit(10))
   ]);
 
   const fmt = (arr, fn) => arr.length ? arr.map(fn).join('\n') : 'None';
-  const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+  const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short'}) : '—';
 
-  return `
-=== LIVE FFC IT PORTAL DATA (as of ${new Date().toLocaleString('en-GB')}) ===
+  // Format presence
+  const now = Date.now();
+  const online = teamPresence.filter(u => u.last_seen_at && (now - new Date(u.last_seen_at)) < 5*60000);
+  const recent = teamPresence.filter(u => u.last_seen_at && (now - new Date(u.last_seen_at)) >= 5*60000 && (now - new Date(u.last_seen_at)) < 60*60000);
+  const offline = teamPresence.filter(u => !u.last_seen_at || (now - new Date(u.last_seen_at)) >= 60*60000);
 
-PENDING APPROVALS FOR ${CURRENT_USER.full_name} (${pendingApprovals.length}):
-${fmt(pendingApprovals, a => `- [${a.request?.ref_no||'?'}] ${a.request?.title||'?'} — due ${fmtDate(a.due_at)}`)}
-
-OPEN CHANGE REQUESTS (${openCRs.length}):
-${fmt(openCRs, r => `- [${r.ref_no}] ${r.title} — ${r.status}`)}
-
-OVERDUE CHECKLISTS (${overdueChk.length}):
-${fmt(overdueChk, c => `- [${c.instance_code}] ${c.name_snapshot} — due ${fmtDate(c.due_at)}`)}
-
-LICENSES EXPIRING WITHIN 30 DAYS (${licExpiring.length}):
-${fmt(licExpiring, l => `- ${l.item_name} (${l.vendor||'—'}) — expires ${fmtDate(l.expiry_date)}`)}
-
-OPEN CAPAs (${openCapas.length}):
-${fmt(openCapas, c => `- [${c.capa_code}] ${c.title} — ${c.severity} — ${c.status} — due ${fmtDate(c.target_date)}`)}
-
-DR SERVICES (${drOverdue.length}):
-${fmt(drOverdue, s => `- ${s.service_name} — next test ${fmtDate(s.next_test_due)} — RTO ${s.rto_hours}h / RPO ${s.rpo_hours}h`)}
-
-VENDOR CONTRACTS EXPIRING WITHIN 30 DAYS (${vendorExpiring.length}):
-${fmt(vendorExpiring, v => `- ${v.contract_title} (${v.vendor?.name||'—'}) — ends ${fmtDate(v.end_date)}`)}
-
-ACTIVE IT PROJECTS (${openProjects.length}):
-${fmt(openProjects, p => `- ${p.name} — ${p.status} — ${p.progress_pct||0}% — RAG:${p.rag||'green'} — due ${fmtDate(p.planned_end)}`)}
-`.trim();
+  return `=== LIVE DATA (${new Date().toLocaleTimeString('en-GB')}) ===
+APPROVALS PENDING (${pendingApprovals.length}): ${fmt(pendingApprovals, a => `[${a.request?.ref_no}] ${a.request?.title}`)}
+OPEN CRs (${openCRs.length}): ${fmt(openCRs, r => `[${r.ref_no}] ${r.title} — ${r.status}`)}
+OVERDUE CHECKLISTS (${overdueChk.length}): ${fmt(overdueChk, c => `${c.name_snapshot} due ${fmtDate(c.due_at)}`)}
+LICENSES EXPIRING (${licExpiring.length}): ${fmt(licExpiring, l => `${l.item_name} expires ${fmtDate(l.expiry_date)}`)}
+OPEN CAPAs (${openCapas.length}): ${fmt(openCapas, c => `[${c.capa_code}] ${c.title} — ${c.severity} — ${c.status}`)}
+VENDOR CONTRACTS EXPIRING (${vendorExpiring.length}): ${fmt(vendorExpiring, v => `${v.contract_title} ends ${fmtDate(v.end_date)}`)}
+ACTIVE PROJECTS (${openProjects.length}): ${fmt(openProjects, p => `${p.name} — ${p.progress_pct||0}% — due ${fmtDate(p.planned_end)}`)}
+TEAM ONLINE NOW (${online.length}): ${online.length ? online.map(u=>u.full_name).join(', ') : 'None'}
+TEAM ACTIVE <1HR (${recent.length}): ${recent.length ? recent.map(u=>u.full_name).join(', ') : 'None'}
+TEAM OFFLINE (${offline.length}): ${offline.length ? offline.map(u=>u.full_name).join(', ') : 'None'}`.trim();
 }
 
 
@@ -7249,7 +7239,8 @@ async function sendToGroq(userMessage) {
     return '⚠️ Groq API key not configured. Get your free key at console.groq.com → API Keys → Create API Key. Then open app.js, find CLAUDE_API_KEY near the agent section, and replace YOUR_GROQ_API_KEY with your key.';
   }
 
-  const messages = agentHistory.filter(m => m.role !== 'system');
+  // Keep only last 4 exchanges (8 messages) to stay within token limits
+  const messages = agentHistory.filter(m => m.role !== 'system').slice(-8);
 
   // Trim system prompt to max 3000 chars to stay within Groq free tier token limits
   const sysPrompt = (window._agentSystemPrompt || 'You are an IT operations assistant for Fresh Fruits Company.')
@@ -7319,8 +7310,67 @@ async function renderITAgent() {
         ${[1,2,3,4].map(() => `<div style="background:var(--card);border:0.5px solid var(--line);border-radius:10px;padding:12px;opacity:.4"><div style="height:8px;background:var(--line);border-radius:4px;margin-bottom:6px"></div><div style="height:20px;background:var(--line);border-radius:4px"></div></div>`).join('')}
       </div>
 
-      <!-- Suggestion chips -->
-      <div id="agentSuggestions" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <!-- Quick Action Buttons -->
+      <div style="margin-bottom:16px">
+        <div style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:8px">Quick actions</div>
+
+        <!-- Row 1: Priority / Status -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+          ${[
+            ['🔴','Critical today','What needs my urgent attention today? List only critical and high priority items.',['background:#fef2f2','border-color:#fca5a5','color:#b91c1c']],
+            ['📋','My approvals','What approvals are currently waiting for me? List each with ref number and title.',''],
+            ['👥','Who\'s online','Who from the IT team is currently online or was active recently?',''],
+            ['📊','Project health','Give me a health summary of all active IT projects — status, RAG, and progress.',''  ]
+          ].map(([icon, label, q, style]) => `
+            <button onclick="agentAsk(${JSON.stringify(q)})"
+              style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left;${style}"
+              onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
+              onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
+              <span style="font-size:18px;line-height:1">${icon}</span>
+              <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
+            </button>
+          `).join('')}
+        </div>
+
+        <!-- Row 2: Operational -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+          ${[
+            ['⚠️','Open CAPAs','List all open CAPAs with severity, status and owner.',''],
+            ['🔒','Expiring soon','What licenses or vendor contracts are expiring in the next 30 days?',''],
+            ['✅','Checklists','Are there any overdue or pending checklists that need attention?',''],
+            ['🔄','Open CRs','List all open change requests and their current status.','']
+          ].map(([icon, label, q]) => `
+            <button onclick="agentAsk(${JSON.stringify(q)})"
+              style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
+              onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
+              onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
+              <span style="font-size:18px;line-height:1">${icon}</span>
+              <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
+            </button>
+          `).join('')}
+        </div>
+
+        <!-- Row 3: Reports -->
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+          ${[
+            ['🏥','Team workload','Summarise workload across the IT team based on current assignments.',''],
+            ['💾','DR status','What DR services are configured and when are tests due?',''],
+            ['🏢','Site status','Any issues or pending items specific to each FFC site (HO, TFM, MS, VS)?',''],
+            ['📝','Full briefing','Give me a complete IT operations briefing for today covering all areas.','']
+          ].map(([icon, label, q]) => `
+            <button onclick="agentAsk(${JSON.stringify(q)})"
+              style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
+              onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
+              onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
+              <span style="font-size:18px;line-height:1">${icon}</span>
+              <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Suggestion chips (shown after clear) -->
+      <div id="agentSuggestions" style="display:none;gap:8px;flex-wrap:wrap;margin-bottom:16px">
         ${[
           ['📋 My approvals','What approvals are waiting for me right now?'],
           ['⚠️ Overdue items','What is overdue across checklists and CAPAs?'],
@@ -7366,9 +7416,12 @@ async function renderITAgent() {
         </div>
 
         <!-- Footer -->
-        <div style="padding:6px 14px;border-top:0.5px solid var(--line);background:var(--bg);font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between">
-          <span>Llama 3.3 70B via Groq · Free · Context refreshes on page load</span>
-          <button onclick="agentClear()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0">Clear chat</button>
+        <div style="padding:6px 14px;border-top:0.5px solid var(--line);background:var(--bg);font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between;align-items:center">
+          <span>Llama 3.3 70B · Groq · Free</span>
+          <div style="display:flex;gap:12px">
+            <button onclick="agentRefreshContext()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0" title="Reload live data from portal">↻ Refresh data</button>
+            <button onclick="agentClear()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0" title="Clear conversation history">✕ Clear chat</button>
+          </div>
         </div>
       </div>
 
@@ -7488,6 +7541,14 @@ function agentShowTyping(show) {
 
 async function agentAsk(question) {
   if (!question?.trim()) return;
+
+  // Auto-clear after 8 exchanges to prevent Groq token overflow
+  const userMsgs = agentHistory.filter(m => m.role === 'user').length;
+  if (userMsgs >= 8) {
+    agentHistory = [];
+    agentAppendMessage('💬 Chat auto-cleared to stay within limits. Context is still loaded.', false);
+  }
+
   agentAppendMessage(question, true);
   agentShowTyping(true);
   document.getElementById('agentSuggestions').style.display = 'none';
@@ -7522,11 +7583,30 @@ function agentClear() {
   agentHistory = [];
   const msgs = document.getElementById('agentMessages');
   if (msgs) msgs.innerHTML = '';
-  document.getElementById('agentSuggestions').style.display = 'flex';
-  agentAppendMessage('Chat cleared. How can I help you?', false);
+  agentAppendMessage('Chat cleared. Live context is still loaded — ask me anything.', false);
+}
+
+async function agentRefreshContext() {
+  const dot = document.getElementById('agentStatusDot');
+  const txt = document.getElementById('agentStatusText');
+  if (dot) { dot.style.background = '#f59e0b'; }
+  if (txt) txt.textContent = 'Refreshing data…';
+  agentHistory = [];
+  try {
+    const liveCtx = await loadAgentContext();
+    window._agentSystemPrompt = buildSystemPrompt(liveCtx);
+    if (dot) { dot.style.background = '#22c55e'; dot.style.boxShadow = '0 0 0 2px rgba(34,197,94,.25)'; }
+    if (txt) txt.textContent = 'Live data refreshed · Ready';
+    agentAppendMessage('Data refreshed. I now have the latest portal data. What do you need?', false);
+  } catch(e) {
+    if (dot) dot.style.background = '#ef4444';
+    if (txt) txt.textContent = 'Refresh failed';
+    agentAppendMessage('Could not refresh data. Portal may be slow — try again in a moment.', false);
+  }
 }
 
 // Expose to global scope for inline onclick handlers
 window.agentAsk  = agentAsk;
 window.agentSend = agentSend;
 window.agentClear = agentClear;
+window.agentRefreshContext = agentRefreshContext;
