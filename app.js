@@ -7314,58 +7314,56 @@ async function renderITAgent() {
       <div style="margin-bottom:16px">
         <div style="font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:8px">Quick actions</div>
 
-        <!-- Row 1: Priority / Status -->
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
-          ${[
-            ['🔴','Critical today','What needs my urgent attention today? List only critical and high priority items.',['background:#fef2f2','border-color:#fca5a5','color:#b91c1c']],
-            ['📋','My approvals','What approvals are currently waiting for me? List each with ref number and title.',''],
-            ['👥','Who\'s online','Who from the IT team is currently online or was active recently?',''],
-            ['📊','Project health','Give me a health summary of all active IT projects — status, RAG, and progress.',''  ]
-          ].map(([icon, label, q, style]) => `
-            <button onclick="window.agentAsk(${JSON.stringify(q)})"
-              style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left;${style}"
-              onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
-              onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
-              <span style="font-size:18px;line-height:1">${icon}</span>
-              <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
-            </button>
-          `).join('')}
-        </div>
-
-        <!-- Row 2: Operational -->
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
-          ${[
-            ['⚠️','Open CAPAs','List all open CAPAs with severity, status and owner.',''],
-            ['🔒','Expiring soon','What licenses or vendor contracts are expiring in the next 30 days?',''],
-            ['✅','Checklists','Are there any overdue or pending checklists that need attention?',''],
-            ['🔄','Open CRs','List all open change requests and their current status.','']
-          ].map(([icon, label, q]) => `
-            <button onclick="window.agentAsk(${JSON.stringify(q)})"
-              style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
-              onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
-              onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
-              <span style="font-size:18px;line-height:1">${icon}</span>
-              <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
-            </button>
-          `).join('')}
-        </div>
-
-        <!-- Row 3: Reports -->
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
-          ${[
-            ['🏥','Team workload','Summarise workload across the IT team based on current assignments.',''],
-            ['💾','DR status','What DR services are configured and when are tests due?',''],
-            ['🏢','Site status','Any issues or pending items specific to each FFC site (HO, TFM, MS, VS)?',''],
-            ['📝','Full briefing','Give me a complete IT operations briefing for today covering all areas.','']
-          ].map(([icon, label, q]) => `
-            <button onclick="window.agentAsk(${JSON.stringify(q)})"
-              style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
-              onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
-              onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
-              <span style="font-size:18px;line-height:1">${icon}</span>
-              <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
-            </button>
-          `).join('')}
+        <!-- Quick action rows — use data-q attribute to avoid quote conflicts in onclick -->
+        <div id="agentQuickBtns">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+            ${[
+              ['🔴','Critical today',0],
+              ['📋','My approvals',1],
+              ['👥','Who\'s online',2],
+              ['📊','Project health',3]
+            ].map(([icon, label, idx]) => `
+              <button data-qa="${idx}"
+                style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
+                onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
+                onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
+                <span style="font-size:18px;line-height:1">${icon}</span>
+                <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
+              </button>
+            `).join('')}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+            ${[
+              ['⚠️','Open CAPAs',4],
+              ['🔒','Expiring soon',5],
+              ['✅','Checklists',6],
+              ['🔄','Open CRs',7]
+            ].map(([icon, label, idx]) => `
+              <button data-qa="${idx}"
+                style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
+                onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
+                onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
+                <span style="font-size:18px;line-height:1">${icon}</span>
+                <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
+              </button>
+            `).join('')}
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+            ${[
+              ['🏥','Team workload',8],
+              ['💾','DR status',9],
+              ['🏢','Site status',10],
+              ['📝','Full briefing',11]
+            ].map(([icon, label, idx]) => `
+              <button data-qa="${idx}"
+                style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
+                onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
+                onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
+                <span style="font-size:18px;line-height:1">${icon}</span>
+                <span style="font-size:12px;font-weight:500;color:var(--ink);line-height:1.2">${label}</span>
+              </button>
+            `).join('')}
+          </div>
         </div>
       </div>
 
@@ -7443,6 +7441,28 @@ async function renderITAgent() {
 
   document.getElementById('agentInput').addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); agentSend(); }
+  });
+
+  // Wire quick action buttons via data-qa index (avoids quote conflict in onclick)
+  const QA_QUERIES = [
+    'What needs my urgent attention today? List only critical and high priority items.',
+    'What approvals are currently waiting for me? List each with ref number and title.',
+    'Who from the IT team is currently online or was active recently?',
+    'Give me a health summary of all active IT projects — status, RAG, and progress.',
+    'List all open CAPAs with severity, status and owner.',
+    'What licenses or vendor contracts are expiring in the next 30 days?',
+    'Are there any overdue or pending checklists that need attention?',
+    'List all open change requests and their current status.',
+    'Summarise workload across the IT team based on current assignments.',
+    'What DR services are configured and when are tests due?',
+    'Any issues or pending items specific to each FFC site (HO, TFM, MS, VS)?',
+    'Give me a complete IT operations briefing for today covering all areas.'
+  ];
+  document.querySelectorAll('[data-qa]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.qa);
+      if (QA_QUERIES[idx]) agentAsk(QA_QUERIES[idx]);
+    });
   });
 
   // Load live context in background
