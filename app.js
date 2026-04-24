@@ -7160,35 +7160,35 @@ let agentHistory = [];
 
 // Load live context from Supabase to give the agent real data
 async function loadAgentContext() {
-  const today = new Date().toISOString().slice(0,10);
-  const in30   = new Date(Date.now() + 30*86400000).toISOString().slice(0,10);
+  const in30 = new Date(Date.now() + 30*86400000).toISOString().slice(0,10);
+
+  const safe = async (fn) => {
+    try { const r = await fn(); return r.data || []; }
+    catch(e) { console.warn('Agent context query failed:', e.message); return []; }
+  };
 
   const [
     openCRs, pendingApprovals, overdueChk, licExpiring,
     openCapas, drOverdue, vendorExpiring, openProjects
-  ] = await Promise.allSettled([
-    sb.from('request_master').select('ref_no,title,status,created_at,module')
+  ] = await Promise.all([
+    safe(() => sb.from('request_master').select('ref_no,title,status')
       .eq('module','change_request').in('status',['submitted','pending_approval','approved','scheduled'])
-      .order('created_at',{ascending:false}).limit(10),
-    sb.from('request_approvals').select('request:request_master(ref_no,title,module,status),due_at')
-      .eq('approver_id',CURRENT_USER.id).eq('decision','pending').limit(10),
-    sb.from('checklist_instances').select('instance_code,name_snapshot,due_at,assignee:profiles!checklist_instances_assigned_to_fkey(full_name)')
-      .in('status',['overdue','escalated']).order('due_at',{ascending:true}).limit(10),
-    sb.from('license_items').select('item_code,item_name,vendor,expiry_date,criticality')
-      .in('status',['active','expiring_soon']).lte('expiry_date',in30)
-      .order('expiry_date',{ascending:true}).limit(10),
-    sb.from('capas').select('capa_code,title,severity,status,target_date,owner:profiles!capas_owner_id_fkey(full_name)')
-      .in('status',['open','assigned','in_progress','overdue']).order('target_date',{ascending:true}).limit(10),
-    sb.from('dr_services').select('service_name,criticality,next_test_due,rto_hours,rpo_hours')
-      .eq('is_active',true).lte('next_test_due',in30).order('next_test_due',{ascending:true}).limit(10),
-    sb.from('vendor_contracts').select('contract_title,contract_code,end_date,vendor:vendors(name)')
-      .in('status',['active','expiring_soon']).lte('end_date',in30)
-      .order('end_date',{ascending:true}).limit(5),
-    sb.from('it_projects').select('name,status,rag,progress_pct,planned_end,owner:profiles!it_projects_owner_id_fkey(full_name)')
-      .in('status',['planning','in_progress']).order('planned_end',{ascending:true}).limit(10)
+      .order('created_at',{ascending:false}).limit(10)),
+    safe(() => sb.from('request_approvals').select('request:request_master(ref_no,title,status),due_at')
+      .eq('approver_id',CURRENT_USER.id).eq('decision','pending').limit(10)),
+    safe(() => sb.from('checklist_instances').select('instance_code,name_snapshot,due_at')
+      .in('status',['overdue','escalated']).order('due_at',{ascending:true}).limit(10)),
+    safe(() => sb.from('license_items').select('item_code,item_name,vendor,expiry_date,criticality')
+      .lte('expiry_date',in30).order('expiry_date',{ascending:true}).limit(10)),
+    safe(() => sb.from('capas').select('capa_code,title,severity,status,target_date')
+      .in('status',['open','assigned','in_progress','overdue']).order('target_date',{ascending:true}).limit(10)),
+    safe(() => sb.from('dr_services').select('service_name,next_test_due,rto_hours,rpo_hours')
+      .eq('is_active',true).limit(10)),
+    safe(() => sb.from('vendor_contracts').select('contract_title,end_date,vendor:vendors(name)')
+      .lte('end_date',in30).order('end_date',{ascending:true}).limit(5)),
+    safe(() => sb.from('it_projects').select('name,status,rag,progress_pct,planned_end')
+      .in('status',['planning','in_progress']).order('planned_end',{ascending:true}).limit(10))
   ]);
-
-  const pick = r => r.status === 'fulfilled' ? (r.value?.data || []) : [];
 
   const fmt = (arr, fn) => arr.length ? arr.map(fn).join('\n') : 'None';
   const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
@@ -7196,31 +7196,32 @@ async function loadAgentContext() {
   return `
 === LIVE FFC IT PORTAL DATA (as of ${new Date().toLocaleString('en-GB')}) ===
 
-PENDING APPROVALS FOR ${CURRENT_USER.full_name}:
-${fmt(pick(pendingApprovals), a => `- [${a.request?.ref_no}] ${a.request?.title} — due ${fmtDate(a.due_at)}`)}
+PENDING APPROVALS FOR ${CURRENT_USER.full_name} (${pendingApprovals.length}):
+${fmt(pendingApprovals, a => `- [${a.request?.ref_no||'?'}] ${a.request?.title||'?'} — due ${fmtDate(a.due_at)}`)}
 
-OPEN CHANGE REQUESTS:
-${fmt(pick(openCRs), r => `- [${r.ref_no}] ${r.title} — ${r.status}`)}
+OPEN CHANGE REQUESTS (${openCRs.length}):
+${fmt(openCRs, r => `- [${r.ref_no}] ${r.title} — ${r.status}`)}
 
-OVERDUE CHECKLISTS (${pick(overdueChk).length}):
-${fmt(pick(overdueChk), c => `- [${c.instance_code}] ${c.name_snapshot} — due ${fmtDate(c.due_at)} — assigned to ${c.assignee?.full_name||'unassigned'}`)}
+OVERDUE CHECKLISTS (${overdueChk.length}):
+${fmt(overdueChk, c => `- [${c.instance_code}] ${c.name_snapshot} — due ${fmtDate(c.due_at)}`)}
 
-LICENSES EXPIRING IN 30 DAYS (${pick(licExpiring).length}):
-${fmt(pick(licExpiring), l => `- ${l.item_name} (${l.vendor}) — expires ${fmtDate(l.expiry_date)} — ${l.criticality}`)}
+LICENSES EXPIRING WITHIN 30 DAYS (${licExpiring.length}):
+${fmt(licExpiring, l => `- ${l.item_name} (${l.vendor||'—'}) — expires ${fmtDate(l.expiry_date)}`)}
 
-OPEN CAPAs (${pick(openCapas).length}):
-${fmt(pick(openCapas), c => `- [${c.capa_code}] ${c.title} — ${c.severity} — ${c.status} — owner: ${c.owner?.full_name||'unassigned'} — due ${fmtDate(c.target_date)}`)}
+OPEN CAPAs (${openCapas.length}):
+${fmt(openCapas, c => `- [${c.capa_code}] ${c.title} — ${c.severity} — ${c.status} — due ${fmtDate(c.target_date)}`)}
 
-DR TESTS DUE SOON (${pick(drOverdue).length}):
-${fmt(pick(drOverdue), s => `- ${s.service_name} — next test ${fmtDate(s.next_test_due)} — RTO ${s.rto_hours}h / RPO ${s.rpo_hours}h`)}
+DR SERVICES (${drOverdue.length}):
+${fmt(drOverdue, s => `- ${s.service_name} — next test ${fmtDate(s.next_test_due)} — RTO ${s.rto_hours}h / RPO ${s.rpo_hours}h`)}
 
-VENDOR CONTRACTS EXPIRING IN 30 DAYS:
-${fmt(pick(vendorExpiring), v => `- ${v.contract_title} (${v.vendor?.name}) — ends ${fmtDate(v.end_date)}`)}
+VENDOR CONTRACTS EXPIRING WITHIN 30 DAYS (${vendorExpiring.length}):
+${fmt(vendorExpiring, v => `- ${v.contract_title} (${v.vendor?.name||'—'}) — ends ${fmtDate(v.end_date)}`)}
 
-ACTIVE IT PROJECTS:
-${fmt(pick(openProjects), p => `- ${p.name} — ${p.status} — ${p.progress_pct||0}% — RAG:${p.rag||'green'} — owner:${p.owner?.full_name||'—'} — due ${fmtDate(p.planned_end)}`)}
+ACTIVE IT PROJECTS (${openProjects.length}):
+${fmt(openProjects, p => `- ${p.name} — ${p.status} — ${p.progress_pct||0}% — RAG:${p.rag||'green'} — due ${fmtDate(p.planned_end)}`)}
 `.trim();
 }
+
 
 // Build system prompt with live context
 function buildSystemPrompt(liveContext) {
