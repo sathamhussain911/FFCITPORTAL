@@ -7322,7 +7322,7 @@ async function renderITAgent() {
             ['👥','Who\'s online','Who from the IT team is currently online or was active recently?',''],
             ['📊','Project health','Give me a health summary of all active IT projects — status, RAG, and progress.',''  ]
           ].map(([icon, label, q, style]) => `
-            <button onclick="agentAsk(${JSON.stringify(q)})"
+            <button onclick="window.agentAsk(${JSON.stringify(q)})"
               style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left;${style}"
               onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
               onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
@@ -7340,7 +7340,7 @@ async function renderITAgent() {
             ['✅','Checklists','Are there any overdue or pending checklists that need attention?',''],
             ['🔄','Open CRs','List all open change requests and their current status.','']
           ].map(([icon, label, q]) => `
-            <button onclick="agentAsk(${JSON.stringify(q)})"
+            <button onclick="window.agentAsk(${JSON.stringify(q)})"
               style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
               onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
               onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
@@ -7358,7 +7358,7 @@ async function renderITAgent() {
             ['🏢','Site status','Any issues or pending items specific to each FFC site (HO, TFM, MS, VS)?',''],
             ['📝','Full briefing','Give me a complete IT operations briefing for today covering all areas.','']
           ].map(([icon, label, q]) => `
-            <button onclick="agentAsk(${JSON.stringify(q)})"
+            <button onclick="window.agentAsk(${JSON.stringify(q)})"
               style="display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding:10px 12px;border-radius:10px;border:0.5px solid var(--line);background:var(--card);cursor:pointer;transition:all .15s;text-align:left"
               onmouseover="this.style.borderColor='var(--green-500)';this.style.transform='translateY(-1px)'"
               onmouseout="this.style.borderColor='var(--line)';this.style.transform='translateY(0)'">
@@ -7379,7 +7379,7 @@ async function renderITAgent() {
           ['🔧 Open CAPAs','List all open CAPAs with their severity and owner'],
           ['💾 DR status','What DR tests are due and what services are covered?']
         ].map(([label, q]) => `
-          <button onclick="agentAsk(${JSON.stringify(q)})" style="font-size:12px;padding:6px 12px;border-radius:16px;border:0.5px solid var(--line);background:var(--card);color:var(--ink-soft);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--green-500)';this.style.color='var(--green-700)'" onmouseout="this.style.borderColor='var(--line)';this.style.color='var(--ink-soft)'">${label}</button>
+          <button onclick="window.agentAsk(${JSON.stringify(q)})" style="font-size:12px;padding:6px 12px;border-radius:16px;border:0.5px solid var(--line);background:var(--card);color:var(--ink-soft);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--green-500)';this.style.color='var(--green-700)'" onmouseout="this.style.borderColor='var(--line)';this.style.color='var(--ink-soft)'">${label}</button>
         `).join('')}
       </div>
 
@@ -7410,7 +7410,7 @@ async function renderITAgent() {
             style="flex:1;padding:9px 14px;border:0.5px solid var(--line);border-radius:20px;font-size:13px;background:var(--card);color:var(--ink);outline:none;font-family:inherit"
             onfocus="this.style.borderColor='var(--green-500)'"
             onblur="this.style.borderColor='var(--line)'" />
-          <button id="agentSendBtn" onclick="agentSend()" style="width:36px;height:36px;border-radius:50%;background:var(--green-700);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .15s" onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">
+          <button id="agentSendBtn" onclick="window.agentSend()" style="width:36px;height:36px;border-radius:50%;background:var(--green-700);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .15s" onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="white"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
           </button>
         </div>
@@ -7419,8 +7419,8 @@ async function renderITAgent() {
         <div style="padding:6px 14px;border-top:0.5px solid var(--line);background:var(--bg);font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between;align-items:center">
           <span>Llama 3.3 70B · Groq · Free</span>
           <div style="display:flex;gap:12px">
-            <button onclick="agentRefreshContext()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0" title="Reload live data from portal">↻ Refresh data</button>
-            <button onclick="agentClear()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0" title="Clear conversation history">✕ Clear chat</button>
+            <button onclick="window.agentRefreshContext()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0" title="Reload live data from portal">↻ Refresh data</button>
+            <button onclick="window.agentClear()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0" title="Clear conversation history">✕ Clear chat</button>
           </div>
         </div>
       </div>
@@ -7477,7 +7477,7 @@ async function renderITAgent() {
         { label:'Expiring (30d)', value: counts[3].count||0, color: counts[3].count>0 ? '#f59e0b':'var(--muted)', bg: counts[3].count>0?'#fffbeb':'var(--card)' }
       ];
       cards.innerHTML = cardData.map(c => `
-        <div style="background:${c.bg};border:0.5px solid var(--line);border-radius:10px;padding:12px;cursor:pointer" onclick="agentAsk('Tell me about ${c.label.toLowerCase()}')">
+        <div style="background:${c.bg};border:0.5px solid var(--line);border-radius:10px;padding:12px;cursor:pointer" onclick="window.agentAsk('Tell me about ${c.label.toLowerCase()}')">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${c.label}</div>
           <div style="font-size:22px;font-weight:600;color:${c.color}">${c.value}</div>
         </div>
