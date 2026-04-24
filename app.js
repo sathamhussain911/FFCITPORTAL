@@ -7225,49 +7225,22 @@ ${fmt(openProjects, p => `- ${p.name} — ${p.status} — ${p.progress_pct||0}% 
 
 // Build system prompt with live context
 function buildSystemPrompt(liveContext) {
+  // Keep static context + live data within safe limits for Groq free tier
+  const trimmedLive = liveContext.substring(0, 1800);
   return `You are the FFC IT Operations AI Agent for Fresh Fruits Company (UAE).
 You assist ${CURRENT_USER.full_name} (role: ${USER_ROLES.join(', ')}).
 
-TEAM:
-- Satham — IT Manager
-- Syeed Hassan — Senior Sysadmin (security, systems, deployments)
-- Sohail Khan — ERP Admin (SAP, NetSuite)
-- Nidheeshlal — Network Admin (FortiGate, Aruba, VLANs)
-- Muhammed Reza — IT Support
-- Majeed — Helpdesk
+TEAM: Satham (IT Mgr), Syeed Hassan (Sysadmin), Sohail Khan (ERP Admin), Nidheeshlal (Network Admin), Muhammed Reza (IT Support), Majeed (Helpdesk)
 
-INFRASTRUCTURE:
-- Firewall: FortiGate 200E (FortiOS 7.2.x) — 12 audit findings (4 critical)
-- Core switch: Aruba 2930F VSF stack
-- Servers: HP ProLiant Hyper-V hosts
-- Storage: QNAP + Synology NAS, Azure IaaS
-- ERP: SAP (TFM, vendor-managed RDP) + Oracle NetSuite (FFC, SaaS)
-- M365: ~300 users, Entra ID hybrid, MFA rollout in progress
-- Backup: Veeam Enterprise deploying, Wasabi Cloud Object Lock, 3-2-1-1 strategy
-- Monitoring: PRTG, ManageEngine ServiceDesk Plus
+INFRA: FortiGate 200E, Aruba 2930F VSF, HP ProLiant Hyper-V, QNAP/Synology NAS, Azure IaaS, SAP (TFM), Oracle NetSuite (FFC), M365 ~300 users, Veeam backup (deploying), PRTG, ManageEngine
 
-ACTIVE PROJECTS:
-- MFA rollout (215 users, SMS OTP, Syeed owns)
-- Veeam 3-2-1-1 backup deployment
-- FortiGate VLAN migration (CCTV VLAN 45 first phase)
-- JumpServer PAM implementation
-- ESL/Zkong cloud migration (Technowave vendor)
-- AD security audit (PingCastle → Purple Knight)
-- SAP–CompuCash integration (price sync issues)
+ACTIVE PROJECTS: MFA rollout (215 users), Veeam 3-2-1-1 backup, FortiGate VLAN migration, JumpServer PAM, ESL/Zkong cloud migration, AD security audit, SAP-CompuCash integration
 
-SITES: FFC Head Office, TFM (The Fresh Market), Market Shop, VS
+SITES: FFC Head Office, TFM, Market Shop, VS
 
-FFC IT PORTAL MODULES: Change Requests, SOPs, Leave/Overtime, Onboarding/Offboarding, Access Requests, Asset Registry, License Tracker, Vendor Contracts, DR Tracker, CAPA Register, Branch Compliance, Checklists, IT Projects
+${trimmedLive}
 
-${liveContext}
-
-RESPONSE RULES:
-- Be direct, concise, and practical (under 150 words unless detail explicitly needed)
-- Use bullet points for lists
-- Reference actual data from the live context above when relevant
-- When asked to create/raise something, explain how to do it in the FFC IT Portal
-- If asked about something not in context, say so clearly
-- Never make up ticket numbers or data not in the context above`;
+RULES: Be concise (under 120 words). Use bullets. Reference live data above. Never invent ticket numbers.`;
 }
 
 // Send message to Groq API
@@ -7277,6 +7250,10 @@ async function sendToGroq(userMessage) {
   }
 
   const messages = agentHistory.filter(m => m.role !== 'system');
+
+  // Trim system prompt to max 3000 chars to stay within Groq free tier token limits
+  const sysPrompt = (window._agentSystemPrompt || 'You are an IT operations assistant for Fresh Fruits Company.')
+    .substring(0, 3000);
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -7289,8 +7266,8 @@ async function sendToGroq(userMessage) {
       temperature: 0.4,
       max_tokens: 512,
       messages: [
-        { role: 'system', content: window._agentSystemPrompt || 'You are an IT operations assistant for Fresh Fruits Company.' },
-        ...messages.map(m => ({ role: m.role, content: m.content }))
+        { role: 'system', content: sysPrompt },
+        ...messages.slice(-6).map(m => ({ role: m.role, content: m.content }))
       ]
     })
   });
@@ -7300,6 +7277,7 @@ async function sendToGroq(userMessage) {
     const msg = err.error?.message || `API error ${response.status}`;
     if (response.status === 401) throw new Error('Invalid API key. Check your key at console.groq.com');
     if (response.status === 429) throw new Error('Rate limit reached. Wait a moment and try again.');
+    if (response.status === 400) throw new Error(`Bad request: ${msg}`);
     throw new Error(msg);
   }
 
@@ -7422,6 +7400,14 @@ async function renderITAgent() {
     // Rebuild system with live data
     window._agentSystemPrompt = buildSystemPrompt(liveCtx);
 
+    // Load counts for stat cards
+    const counts = await Promise.all([
+      sb.from('request_approvals').select('id',{count:'exact',head:true}).eq('approver_id',CURRENT_USER.id).eq('decision','pending'),
+      sb.from('checklist_instances').select('id',{count:'exact',head:true}).in('status',['overdue','escalated']),
+      sb.from('capas').select('id',{count:'exact',head:true}).in('status',['open','assigned','in_progress','overdue']),
+      sb.from('license_items').select('id',{count:'exact',head:true}).lte('expiry_date', new Date(Date.now()+30*86400000).toISOString().slice(0,10))
+    ]);
+
     // Update status indicator
     const dot = document.getElementById('agentStatusDot');
     const txt = document.getElementById('agentStatusText');
@@ -7431,20 +7417,12 @@ async function renderITAgent() {
     // Update context summary cards
     const cards = document.getElementById('agentContextCards');
     if (cards) {
-      const counts = await Promise.all([
-        sb.from('request_approvals').select('id',{count:'exact',head:true}).eq('approver_id',CURRENT_USER.id).eq('decision','pending'),
-        sb.from('checklist_instances').select('id',{count:'exact',head:true}).in('status',['overdue','escalated']),
-        sb.from('capas').select('id',{count:'exact',head:true}).in('status',['open','assigned','in_progress','overdue']),
-        sb.from('license_items').select('id',{count:'exact',head:true}).in('status',['active','expiring_soon']).lte('expiry_date', new Date(Date.now()+30*86400000).toISOString().slice(0,10))
-      ]);
-
       const cardData = [
         { label:'My Approvals', value: counts[0].count||0, color:'var(--green-700)', bg:'var(--green-50)' },
         { label:'Overdue Checks', value: counts[1].count||0, color: counts[1].count>0 ? '#ef4444':'var(--muted)', bg: counts[1].count>0?'#fef2f2':'var(--card)' },
         { label:'Open CAPAs', value: counts[2].count||0, color: counts[2].count>0 ? '#f59e0b':'var(--muted)', bg: counts[2].count>0?'#fffbeb':'var(--card)' },
         { label:'Expiring (30d)', value: counts[3].count||0, color: counts[3].count>0 ? '#f59e0b':'var(--muted)', bg: counts[3].count>0?'#fffbeb':'var(--card)' }
       ];
-
       cards.innerHTML = cardData.map(c => `
         <div style="background:${c.bg};border:0.5px solid var(--line);border-radius:10px;padding:12px;cursor:pointer" onclick="agentAsk('Tell me about ${c.label.toLowerCase()}')">
           <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${c.label}</div>
