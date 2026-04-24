@@ -7153,7 +7153,7 @@ async function openMilestoneEditor(projectId, milestoneId, defaultSeq) {
 
 // Claude API — replace YOUR_ANTHROPIC_API_KEY with your key from console.anthropic.com
 // Model: claude-sonnet-4-6 (~$4-6/month for your usage, well within $20 budget)
-const CLAUDE_API_KEY = 'YOUR_ANTHROPIC_API_KEY';
+const CLAUDE_API_KEY = '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';
 const CLAUDE_MODEL   = 'claude-sonnet-4-6';
 
 // Conversation history (kept in memory per session)
