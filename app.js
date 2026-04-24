@@ -516,6 +516,7 @@ async function route(view) {
       case 'sop-library': await renderSopLibrary(); break;
       case 'change-calendar': await renderChangeCalendar(); break;
       case 'it-projects': await renderITProjects(); break;
+      case 'it-agent': await renderITAgent(); break;
       case 'chk-my-tasks': await renderMyChecklistTasks(); break;
       case 'chk-all-tasks': await renderAllChecklistTasks(); break;
       case 'chk-review-queue': await renderChecklistReviewQueue(); break;
@@ -7144,3 +7145,418 @@ async function openMilestoneEditor(projectId, milestoneId, defaultSeq) {
     }
   });
 }
+
+
+// =============================================================================
+// FFC IT OPS AGENT
+// =============================================================================
+
+// Claude API — replace YOUR_ANTHROPIC_API_KEY with your key from console.anthropic.com
+// Model: claude-sonnet-4-6 (~$4-6/month for your usage, well within $20 budget)
+const CLAUDE_API_KEY = 'YOUR_ANTHROPIC_API_KEY';
+const CLAUDE_MODEL   = 'claude-sonnet-4-6';
+
+// Conversation history (kept in memory per session)
+let agentHistory = [];
+
+// Load live context from Supabase to give the agent real data
+async function loadAgentContext() {
+  const today = new Date().toISOString().slice(0,10);
+  const in30   = new Date(Date.now() + 30*86400000).toISOString().slice(0,10);
+
+  const [
+    openCRs, pendingApprovals, overdueChk, licExpiring,
+    openCapas, drOverdue, vendorExpiring, openProjects
+  ] = await Promise.allSettled([
+    sb.from('request_master').select('ref_no,title,status,created_at,module')
+      .eq('module','change_request').in('status',['submitted','pending_approval','approved','scheduled'])
+      .order('created_at',{ascending:false}).limit(10),
+    sb.from('request_approvals').select('request:request_master(ref_no,title,module,status),due_at')
+      .eq('approver_id',CURRENT_USER.id).eq('decision','pending').limit(10),
+    sb.from('checklist_instances').select('instance_code,name_snapshot,due_at,assignee:profiles!checklist_instances_assigned_to_fkey(full_name)')
+      .in('status',['overdue','escalated']).order('due_at',{ascending:true}).limit(10),
+    sb.from('license_items').select('item_code,item_name,vendor,expiry_date,criticality')
+      .in('status',['active','expiring_soon']).lte('expiry_date',in30)
+      .order('expiry_date',{ascending:true}).limit(10),
+    sb.from('capas').select('capa_code,title,severity,status,target_date,owner:profiles!capas_owner_id_fkey(full_name)')
+      .in('status',['open','assigned','in_progress','overdue']).order('target_date',{ascending:true}).limit(10),
+    sb.from('dr_services').select('service_name,criticality,next_test_due,rto_hours,rpo_hours')
+      .eq('is_active',true).lte('next_test_due',in30).order('next_test_due',{ascending:true}).limit(10),
+    sb.from('vendor_contracts').select('contract_title,contract_code,end_date,vendor:vendors(name)')
+      .in('status',['active','expiring_soon']).lte('end_date',in30)
+      .order('end_date',{ascending:true}).limit(5),
+    sb.from('it_projects').select('name,status,rag,progress_pct,planned_end,owner:profiles!it_projects_owner_id_fkey(full_name)')
+      .in('status',['planning','in_progress']).order('planned_end',{ascending:true}).limit(10)
+  ]);
+
+  const pick = r => r.status === 'fulfilled' ? (r.value?.data || []) : [];
+
+  const fmt = (arr, fn) => arr.length ? arr.map(fn).join('\n') : 'None';
+  const fmtDate = d => d ? new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}) : '—';
+
+  return `
+=== LIVE FFC IT PORTAL DATA (as of ${new Date().toLocaleString('en-GB')}) ===
+
+PENDING APPROVALS FOR ${CURRENT_USER.full_name}:
+${fmt(pick(pendingApprovals), a => `- [${a.request?.ref_no}] ${a.request?.title} — due ${fmtDate(a.due_at)}`)}
+
+OPEN CHANGE REQUESTS:
+${fmt(pick(openCRs), r => `- [${r.ref_no}] ${r.title} — ${r.status}`)}
+
+OVERDUE CHECKLISTS (${pick(overdueChk).length}):
+${fmt(pick(overdueChk), c => `- [${c.instance_code}] ${c.name_snapshot} — due ${fmtDate(c.due_at)} — assigned to ${c.assignee?.full_name||'unassigned'}`)}
+
+LICENSES EXPIRING IN 30 DAYS (${pick(licExpiring).length}):
+${fmt(pick(licExpiring), l => `- ${l.item_name} (${l.vendor}) — expires ${fmtDate(l.expiry_date)} — ${l.criticality}`)}
+
+OPEN CAPAs (${pick(openCapas).length}):
+${fmt(pick(openCapas), c => `- [${c.capa_code}] ${c.title} — ${c.severity} — ${c.status} — owner: ${c.owner?.full_name||'unassigned'} — due ${fmtDate(c.target_date)}`)}
+
+DR TESTS DUE SOON (${pick(drOverdue).length}):
+${fmt(pick(drOverdue), s => `- ${s.service_name} — next test ${fmtDate(s.next_test_due)} — RTO ${s.rto_hours}h / RPO ${s.rpo_hours}h`)}
+
+VENDOR CONTRACTS EXPIRING IN 30 DAYS:
+${fmt(pick(vendorExpiring), v => `- ${v.contract_title} (${v.vendor?.name}) — ends ${fmtDate(v.end_date)}`)}
+
+ACTIVE IT PROJECTS:
+${fmt(pick(openProjects), p => `- ${p.name} — ${p.status} — ${p.progress_pct||0}% — RAG:${p.rag||'green'} — owner:${p.owner?.full_name||'—'} — due ${fmtDate(p.planned_end)}`)}
+`.trim();
+}
+
+// Build system prompt with live context
+function buildSystemPrompt(liveContext) {
+  return `You are the FFC IT Operations AI Agent for Fresh Fruits Company (UAE).
+You assist ${CURRENT_USER.full_name} (role: ${USER_ROLES.join(', ')}).
+
+TEAM:
+- Satham — IT Manager
+- Syeed Hassan — Senior Sysadmin (security, systems, deployments)
+- Sohail Khan — ERP Admin (SAP, NetSuite)
+- Nidheeshlal — Network Admin (FortiGate, Aruba, VLANs)
+- Muhammed Reza — IT Support
+- Majeed — Helpdesk
+
+INFRASTRUCTURE:
+- Firewall: FortiGate 200E (FortiOS 7.2.x) — 12 audit findings (4 critical)
+- Core switch: Aruba 2930F VSF stack
+- Servers: HP ProLiant Hyper-V hosts
+- Storage: QNAP + Synology NAS, Azure IaaS
+- ERP: SAP (TFM, vendor-managed RDP) + Oracle NetSuite (FFC, SaaS)
+- M365: ~300 users, Entra ID hybrid, MFA rollout in progress
+- Backup: Veeam Enterprise deploying, Wasabi Cloud Object Lock, 3-2-1-1 strategy
+- Monitoring: PRTG, ManageEngine ServiceDesk Plus
+
+ACTIVE PROJECTS:
+- MFA rollout (215 users, SMS OTP, Syeed owns)
+- Veeam 3-2-1-1 backup deployment
+- FortiGate VLAN migration (CCTV VLAN 45 first phase)
+- JumpServer PAM implementation
+- ESL/Zkong cloud migration (Technowave vendor)
+- AD security audit (PingCastle → Purple Knight)
+- SAP–CompuCash integration (price sync issues)
+
+SITES: FFC Head Office, TFM (The Fresh Market), Market Shop, VS
+
+FFC IT PORTAL MODULES: Change Requests, SOPs, Leave/Overtime, Onboarding/Offboarding, Access Requests, Asset Registry, License Tracker, Vendor Contracts, DR Tracker, CAPA Register, Branch Compliance, Checklists, IT Projects
+
+${liveContext}
+
+RESPONSE RULES:
+- Be direct, concise, and practical (under 150 words unless detail explicitly needed)
+- Use bullet points for lists
+- Reference actual data from the live context above when relevant
+- When asked to create/raise something, explain how to do it in the FFC IT Portal
+- If asked about something not in context, say so clearly
+- Never make up ticket numbers or data not in the context above`;
+}
+
+// Send message to Groq API
+async function sendToGroq(userMessage) {
+  if (!CLAUDE_API_KEY || CLAUDE_API_KEY === 'YOUR_ANTHROPIC_API_KEY') {
+    return '⚠️ Claude API key not configured. Get your free key (with $5 credit) at console.anthropic.com → API Keys → Create Key. Then open app.js, find CLAUDE_API_KEY near the agent section, and replace YOUR_ANTHROPIC_API_KEY with your key.';
+  }
+
+  // Build messages with prompt caching on the system prompt
+  // Caching saves ~60% on input costs — system prompt is cached after first call
+  const messages = agentHistory.filter(m => m.role !== 'system');
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': CLAUDE_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'prompt-caching-2024-07-31'
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 512,
+      system: [
+        {
+          type: 'text',
+          text: window._agentSystemPrompt || 'You are an IT operations assistant for Fresh Fruits Company.',
+          cache_control: { type: 'ephemeral' }
+        }
+      ],
+      messages: messages.map(m => ({ role: m.role, content: m.content }))
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    const msg = err.error?.message || `API error ${response.status}`;
+    if (response.status === 401) throw new Error('Invalid API key. Check your key at console.anthropic.com');
+    if (response.status === 429) throw new Error('Rate limit reached. Wait a moment and try again.');
+    if (response.status === 402) throw new Error('API credit exhausted. Top up at console.anthropic.com');
+    throw new Error(msg);
+  }
+
+  const data = await response.json();
+  return data.content?.[0]?.text || 'No response.';
+}
+
+// Main agent render
+async function renderITAgent() {
+  const canUse = isAdmin() || hasRole('it_manager') || hasRole('sysadmin') ||
+                 hasRole('network_admin') || hasRole('erp_admin') || hasRole('it_support');
+  if (!canUse) {
+    $('#viewContent').innerHTML = '<div class="panel"><div class="panel-body" style="padding:40px;text-align:center;color:var(--muted)">IT Operations Agent is available to IT team members only.</div></div>';
+    return;
+  }
+
+  $('#viewContent').innerHTML = `
+    <div style="max-width:780px;margin:0 auto">
+
+      <!-- Header -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:42px;height:42px;border-radius:12px;background:var(--green-700);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <span style="font-size:20px">🤖</span>
+          </div>
+          <div>
+            <div style="font-size:16px;font-weight:600;color:var(--ink)">FFC IT Ops Agent</div>
+            <div style="font-size:12px;color:var(--muted)">Powered by Claude Sonnet 4.6</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);background:var(--card);border:0.5px solid var(--line);border-radius:20px;padding:4px 12px">
+          <span id="agentStatusDot" style="width:7px;height:7px;border-radius:50%;background:#64748b;display:inline-block"></span>
+          <span id="agentStatusText">Loading context…</span>
+        </div>
+      </div>
+
+      <!-- Context summary cards -->
+      <div id="agentContextCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
+        ${[1,2,3,4].map(() => `<div style="background:var(--card);border:0.5px solid var(--line);border-radius:10px;padding:12px;opacity:.4"><div style="height:8px;background:var(--line);border-radius:4px;margin-bottom:6px"></div><div style="height:20px;background:var(--line);border-radius:4px"></div></div>`).join('')}
+      </div>
+
+      <!-- Suggestion chips -->
+      <div id="agentSuggestions" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+        ${[
+          ['📋 My approvals','What approvals are waiting for me right now?'],
+          ['⚠️ Overdue items','What is overdue across checklists and CAPAs?'],
+          ['🔒 Expiring soon','Which licenses or contracts are expiring in 30 days?'],
+          ['📊 Project status','Give me a status summary of all active IT projects'],
+          ['🔧 Open CAPAs','List all open CAPAs with their severity and owner'],
+          ['💾 DR status','What DR tests are due and what services are covered?']
+        ].map(([label, q]) => `
+          <button onclick="agentAsk(${JSON.stringify(q)})" style="font-size:12px;padding:6px 12px;border-radius:16px;border:0.5px solid var(--line);background:var(--card);color:var(--ink-soft);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--green-500)';this.style.color='var(--green-700)'" onmouseout="this.style.borderColor='var(--line)';this.style.color='var(--ink-soft)'">${label}</button>
+        `).join('')}
+      </div>
+
+      <!-- Chat window -->
+      <div style="background:var(--card);border:0.5px solid var(--line);border-radius:12px;overflow:hidden">
+
+        <!-- Messages -->
+        <div id="agentMessages" style="padding:16px;display:flex;flex-direction:column;gap:12px;min-height:200px;max-height:420px;overflow-y:auto">
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <div style="width:28px;height:28px;border-radius:8px;background:var(--green-700);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px">🤖</div>
+            <div style="background:var(--bg);border:0.5px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.6;color:var(--ink);max-width:85%">
+              Hello ${CURRENT_USER.full_name.split(' ')[0]}. I'm loading your live IT data now — one moment…
+            </div>
+          </div>
+        </div>
+
+        <!-- Typing indicator -->
+        <div id="agentTyping" style="display:none;padding:0 16px 12px;align-items:center;gap:10px">
+          <div style="width:28px;height:28px;border-radius:8px;background:var(--green-700);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:13px">🤖</div>
+          <div style="display:flex;gap:4px;align-items:center">
+            ${[0,150,300].map(d => `<span style="width:6px;height:6px;border-radius:50%;background:var(--muted);animation:agentDot 0.8s ${d}ms infinite ease-in-out"></span>`).join('')}
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div style="padding:12px;border-top:0.5px solid var(--line);display:flex;gap:8px;background:var(--bg)">
+          <input id="agentInput" placeholder="Ask about any IT operation, ticket, asset, project or team…"
+            style="flex:1;padding:9px 14px;border:0.5px solid var(--line);border-radius:20px;font-size:13px;background:var(--card);color:var(--ink);outline:none;font-family:inherit"
+            onfocus="this.style.borderColor='var(--green-500)'"
+            onblur="this.style.borderColor='var(--line)'" />
+          <button id="agentSendBtn" onclick="agentSend()" style="width:36px;height:36px;border-radius:50%;background:var(--green-700);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:opacity .15s" onmouseover="this.style.opacity='.8'" onmouseout="this.style.opacity='1'">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="white"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+          </button>
+        </div>
+
+        <!-- Footer -->
+        <div style="padding:6px 14px;border-top:0.5px solid var(--line);background:var(--bg);font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between">
+          <span>Claude Sonnet 4.6 · ~$4-6/month · Context refreshes on page load</span>
+          <button onclick="agentClear()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0">Clear chat</button>
+        </div>
+      </div>
+
+      <!-- API key notice -->
+      ${(!CLAUDE_API_KEY || CLAUDE_API_KEY === 'YOUR_ANTHROPIC_API_KEY') ? `
+      <div style="margin-top:12px;background:#fff5eb;border:1px solid #f5a02a55;border-radius:8px;padding:12px 16px;font-size:12.5px;color:var(--ink)">
+        ⚠️ <strong>Claude API key needed.</strong> Sign up free at <a href="https://console.anthropic.com" target="_blank" style="color:var(--green-700)">console.anthropic.com</a> (includes $5 free credit, no card needed).
+        Go to <strong>API Keys → Create Key</strong>. Then open <code>app.js</code>, find <code>CLAUDE_API_KEY</code> near the agent section, and replace <code>YOUR_ANTHROPIC_API_KEY</code> with your key.
+      </div>` : ''}
+    </div>
+
+    <style>
+      @keyframes agentDot {
+        0%,60%,100%{transform:translateY(0);opacity:.4}
+        30%{transform:translateY(-4px);opacity:1}
+      }
+    </style>
+  `;
+
+  document.getElementById('agentInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); agentSend(); }
+  });
+
+  // Load live context in background
+  try {
+    const liveCtx = await loadAgentContext();
+    agentHistory = [];
+
+    // Rebuild system with live data
+    window._agentSystemPrompt = buildSystemPrompt(liveCtx);
+
+    // Update status indicator
+    const dot = document.getElementById('agentStatusDot');
+    const txt = document.getElementById('agentStatusText');
+    if (dot) { dot.style.background = '#22c55e'; dot.style.boxShadow = '0 0 0 2px rgba(34,197,94,.25)'; }
+    if (txt) txt.textContent = 'Live data loaded · Ready';
+
+    // Update context summary cards
+    const cards = document.getElementById('agentContextCards');
+    if (cards) {
+      const counts = await Promise.all([
+        sb.from('request_approvals').select('id',{count:'exact',head:true}).eq('approver_id',CURRENT_USER.id).eq('decision','pending'),
+        sb.from('checklist_instances').select('id',{count:'exact',head:true}).in('status',['overdue','escalated']),
+        sb.from('capas').select('id',{count:'exact',head:true}).in('status',['open','assigned','in_progress','overdue']),
+        sb.from('license_items').select('id',{count:'exact',head:true}).in('status',['active','expiring_soon']).lte('expiry_date', new Date(Date.now()+30*86400000).toISOString().slice(0,10))
+      ]);
+
+      const cardData = [
+        { label:'My Approvals', value: counts[0].count||0, color:'var(--green-700)', bg:'var(--green-50)' },
+        { label:'Overdue Checks', value: counts[1].count||0, color: counts[1].count>0 ? '#ef4444':'var(--muted)', bg: counts[1].count>0?'#fef2f2':'var(--card)' },
+        { label:'Open CAPAs', value: counts[2].count||0, color: counts[2].count>0 ? '#f59e0b':'var(--muted)', bg: counts[2].count>0?'#fffbeb':'var(--card)' },
+        { label:'Expiring (30d)', value: counts[3].count||0, color: counts[3].count>0 ? '#f59e0b':'var(--muted)', bg: counts[3].count>0?'#fffbeb':'var(--card)' }
+      ];
+
+      cards.innerHTML = cardData.map(c => `
+        <div style="background:${c.bg};border:0.5px solid var(--line);border-radius:10px;padding:12px;cursor:pointer" onclick="agentAsk('Tell me about ${c.label.toLowerCase()}')">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${c.label}</div>
+          <div style="font-size:22px;font-weight:600;color:${c.color}">${c.value}</div>
+        </div>
+      `).join('');
+    }
+
+    // Welcome message with real data
+    agentAppendMessage(`Context loaded. I can see your live IT data — ${counts[0].count||0} approvals pending, ${counts[1].count||0} overdue checklists, ${counts[2].count||0} open CAPAs. What do you need?`, false);
+
+  } catch(e) {
+    console.error('Agent context load failed', e);
+    window._agentSystemPrompt = buildSystemPrompt('Live data could not be loaded. Answer from FFC IT knowledge only.');
+    const dot = document.getElementById('agentStatusDot');
+    const txt = document.getElementById('agentStatusText');
+    if (dot) dot.style.background = '#f59e0b';
+    if (txt) txt.textContent = 'Context load failed — offline mode';
+    agentAppendMessage('I could not load live data from the portal. I can still help with general FFC IT questions.', false);
+  }
+}
+
+function agentAppendMessage(text, isUser) {
+  const msgs = document.getElementById('agentMessages');
+  if (!msgs) return;
+
+  const div = document.createElement('div');
+  div.style.cssText = `display:flex;gap:10px;align-items:flex-start;${isUser?'flex-direction:row-reverse':''}`;
+
+  const formatted = text
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/`(.*?)`/g, '<code style="background:var(--bg);padding:1px 5px;border-radius:4px;font-family:monospace;font-size:12px">$1</code>')
+    .replace(/^- (.+)/gm, '<li style="margin-left:16px">$1</li>')
+    .replace(/\n/g, '<br>');
+
+  div.innerHTML = `
+    <div style="width:28px;height:28px;border-radius:8px;background:${isUser?'var(--green-100)':'var(--green-700)'};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:${isUser?'11px':'13px'};font-weight:${isUser?'600':'400'};color:${isUser?'var(--green-700)':'white'}">
+      ${isUser ? CURRENT_USER.full_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : '🤖'}
+    </div>
+    <div style="background:${isUser?'var(--green-700)':'var(--bg)'};color:${isUser?'white':'var(--ink)'};border:0.5px solid ${isUser?'transparent':'var(--line)'};border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.6;max-width:85%">
+      ${formatted}
+    </div>
+  `;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function agentShowTyping(show) {
+  const t = document.getElementById('agentTyping');
+  if (t) {
+    t.style.display = show ? 'flex' : 'none';
+    if (show) {
+      const msgs = document.getElementById('agentMessages');
+      if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    }
+  }
+  const btn = document.getElementById('agentSendBtn');
+  const inp = document.getElementById('agentInput');
+  if (btn) btn.disabled = show;
+  if (inp) inp.disabled = show;
+}
+
+async function agentAsk(question) {
+  if (!question?.trim()) return;
+  agentAppendMessage(question, true);
+  agentShowTyping(true);
+  document.getElementById('agentSuggestions').style.display = 'none';
+
+  // Add to conversation history
+  if (!agentHistory.length) {
+    agentHistory.push({ role: 'system', content: window._agentSystemPrompt || buildSystemPrompt('Context not loaded.') });
+  }
+  agentHistory.push({ role: 'user', content: question });
+
+  try {
+    const reply = await sendToGroq(question);
+    agentHistory.push({ role: 'assistant', content: reply });
+    agentShowTyping(false);
+    agentAppendMessage(reply, false);
+  } catch(e) {
+    agentShowTyping(false);
+    agentAppendMessage(`Error: ${e.message || 'Could not reach AI. Check your API key and internet connection.'}`, false);
+  }
+}
+
+function agentSend() {
+  const inp = document.getElementById('agentInput');
+  if (!inp) return;
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = '';
+  agentAsk(text);
+}
+
+function agentClear() {
+  agentHistory = [];
+  const msgs = document.getElementById('agentMessages');
+  if (msgs) msgs.innerHTML = '';
+  document.getElementById('agentSuggestions').style.display = 'flex';
+  agentAppendMessage('Chat cleared. How can I help you?', false);
+}
+
+// Expose to global scope for inline onclick handlers
+window.agentAsk  = agentAsk;
+window.agentSend = agentSend;
+window.agentClear = agentClear;
