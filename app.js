@@ -7151,10 +7151,9 @@ async function openMilestoneEditor(projectId, milestoneId, defaultSeq) {
 // FFC IT OPS AGENT
 // =============================================================================
 
-// Claude API — replace YOUR_ANTHROPIC_API_KEY with your key from console.anthropic.com
-// Model: claude-sonnet-4-6 (~$4-6/month for your usage, well within $20 budget)
-const CLAUDE_API_KEY = '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';
-const CLAUDE_MODEL   = 'claude-sonnet-4-6';
+// Groq free API — get key from console.groq.com (free, no card needed)
+const CLAUDE_API_KEY = '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';
+const CLAUDE_MODEL   = 'llama-3.3-70b-versatile';
 
 // Conversation history (kept in memory per session)
 let agentHistory = [];
@@ -7272,47 +7271,39 @@ RESPONSE RULES:
 
 // Send message to Groq API
 async function sendToGroq(userMessage) {
-  if (!CLAUDE_API_KEY || CLAUDE_API_KEY === 'YOUR_ANTHROPIC_API_KEY') {
-    return '⚠️ Claude API key not configured. Get your free key (with $5 credit) at console.anthropic.com → API Keys → Create Key. Then open app.js, find CLAUDE_API_KEY near the agent section, and replace YOUR_ANTHROPIC_API_KEY with your key.';
+  if (!CLAUDE_API_KEY || CLAUDE_API_KEY === 'YOUR_GROQ_API_KEY') {
+    return '⚠️ Groq API key not configured. Get your free key at console.groq.com → API Keys → Create API Key. Then open app.js, find CLAUDE_API_KEY near the agent section, and replace YOUR_GROQ_API_KEY with your key.';
   }
 
-  // Build messages with prompt caching on the system prompt
-  // Caching saves ~60% on input costs — system prompt is cached after first call
   const messages = agentHistory.filter(m => m.role !== 'system');
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': CLAUDE_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'prompt-caching-2024-07-31'
+      'Authorization': `Bearer ${CLAUDE_API_KEY}`
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
+      temperature: 0.4,
       max_tokens: 512,
-      system: [
-        {
-          type: 'text',
-          text: window._agentSystemPrompt || 'You are an IT operations assistant for Fresh Fruits Company.',
-          cache_control: { type: 'ephemeral' }
-        }
-      ],
-      messages: messages.map(m => ({ role: m.role, content: m.content }))
+      messages: [
+        { role: 'system', content: window._agentSystemPrompt || 'You are an IT operations assistant for Fresh Fruits Company.' },
+        ...messages.map(m => ({ role: m.role, content: m.content }))
+      ]
     })
   });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     const msg = err.error?.message || `API error ${response.status}`;
-    if (response.status === 401) throw new Error('Invalid API key. Check your key at console.anthropic.com');
+    if (response.status === 401) throw new Error('Invalid API key. Check your key at console.groq.com');
     if (response.status === 429) throw new Error('Rate limit reached. Wait a moment and try again.');
-    if (response.status === 402) throw new Error('API credit exhausted. Top up at console.anthropic.com');
     throw new Error(msg);
   }
 
   const data = await response.json();
-  return data.content?.[0]?.text || 'No response.';
+  return data.choices?.[0]?.message?.content || 'No response.';
 }
 
 // Main agent render
@@ -7335,7 +7326,7 @@ async function renderITAgent() {
           </div>
           <div>
             <div style="font-size:16px;font-weight:600;color:var(--ink)">FFC IT Ops Agent</div>
-            <div style="font-size:12px;color:var(--muted)">Powered by Claude Sonnet 4.6</div>
+            <div style="font-size:12px;color:var(--muted)">Powered by Llama 3.3 70B · Free via Groq</div>
           </div>
         </div>
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);background:var(--card);border:0.5px solid var(--line);border-radius:20px;padding:4px 12px">
@@ -7397,7 +7388,7 @@ async function renderITAgent() {
 
         <!-- Footer -->
         <div style="padding:6px 14px;border-top:0.5px solid var(--line);background:var(--bg);font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between">
-          <span>Claude Sonnet 4.6 · ~$4-6/month · Context refreshes on page load</span>
+          <span>Llama 3.3 70B via Groq · Free · Context refreshes on page load</span>
           <button onclick="agentClear()" style="background:none;border:none;font-size:10.5px;color:var(--muted);cursor:pointer;padding:0">Clear chat</button>
         </div>
       </div>
@@ -7405,8 +7396,8 @@ async function renderITAgent() {
       <!-- API key notice -->
       ${(!CLAUDE_API_KEY || CLAUDE_API_KEY === 'YOUR_ANTHROPIC_API_KEY') ? `
       <div style="margin-top:12px;background:#fff5eb;border:1px solid #f5a02a55;border-radius:8px;padding:12px 16px;font-size:12.5px;color:var(--ink)">
-        ⚠️ <strong>Claude API key needed.</strong> Sign up free at <a href="https://console.anthropic.com" target="_blank" style="color:var(--green-700)">console.anthropic.com</a> (includes $5 free credit, no card needed).
-        Go to <strong>API Keys → Create Key</strong>. Then open <code>app.js</code>, find <code>CLAUDE_API_KEY</code> near the agent section, and replace <code>YOUR_ANTHROPIC_API_KEY</code> with your key.
+        ⚠️ <strong>Groq API key needed.</strong> Sign up free (no card) at <a href="https://console.groq.com" target="_blank" style="color:var(--green-700)">console.groq.com</a> → API Keys → Create API Key.
+        Then open <code>app.js</code>, find <code>CLAUDE_API_KEY</code> near the agent section, and replace <code>YOUR_GROQ_API_KEY</code> with your key.
       </div>` : ''}
     </div>
 
