@@ -3918,7 +3918,7 @@ async function renderAssetsRegistry() {
     sb.from('assets')
       .select('*, owner:profiles!assets_current_owner_id_fkey(full_name)')
       .order('asset_tag')
-      .limit(1000),  // raised from 300 to 1000
+      .limit(1000),
     sb.from('assets').select('id', { count: 'exact', head: true })
   ]);
 
@@ -3976,11 +3976,13 @@ function renderAssetRowsHeader() {
   </div>`;
 }
 function assetRow(a) {
+  const ownerDisplay = a.owner?.full_name || a.owner_name || '—';
+  const locationDisplay = a.owner_site || a.current_location || '';
   return `<div class="req-row" data-asset="${a.id}" style="grid-template-columns:140px 1fr 100px 1fr 120px">
     <div class="req-id">${escape(a.asset_tag)}</div>
     <div class="req-title">${escape(a.brand || '')} ${escape(a.model || '')}<small>${escape(a.serial_number || '')}</small></div>
     <div class="req-cell mono">${escape(a.asset_type)}</div>
-    <div class="req-cell">${escape(a.owner?.full_name || '—')}${a.current_location?` <small style="color:var(--muted)">· ${escape(a.current_location)}</small>`:''}</div>
+    <div class="req-cell">${escape(ownerDisplay)}${locationDisplay?` <small style="color:var(--muted)">· ${escape(locationDisplay)}</small>`:''}</div>
     <div class="req-cell"><span class="status s-${a.current_condition==='good'?'approved':a.current_condition==='damaged'||a.current_condition==='lost'?'rejected':'pending_approval'}"><span class="dot"></span>${escape(a.current_condition)}</span></div>
   </div>`;
 }
@@ -3990,12 +3992,18 @@ function wireAssetRows() {
 
 async function openAssetEditor(assetId) {
   const canWrite = isAdmin() || hasRole('it_manager') || hasRole('it_support') || hasRole('sysadmin') || hasRole('helpdesk');
-  const [assetRes, usersRes] = await Promise.all([
+
+  const [assetRes, empRes] = await Promise.all([
     assetId ? sb.from('assets').select('*').eq('id', assetId).single() : Promise.resolve({ data: null }),
-    sb.from('profiles').select('id, full_name').eq('is_active', true).order('full_name')
+    sb.from('asset_owner_lookup').select('source,owner_key,full_name,email,department,site').order('full_name').limit(500)
   ]);
+
   const a = assetRes.data || {};
-  const users = usersRes.data || [];
+  const owners = empRes.data || [];
+
+  // Determine current owner display
+  const currentOwnerKey = a.current_owner_id || a.owner_key || '';
+  const currentOwnerName = a.owner_name || owners.find(o => o.owner_key === a.current_owner_id)?.full_name || '';
 
   $('#drawerBg').classList.add('show');
   $('#drawerTitle').textContent = assetId ? `Asset ${a.asset_tag || ''}` : 'New Asset';
@@ -4014,13 +4022,33 @@ async function openAssetEditor(assetId) {
         <div class="field"><label>Specs</label><input id="as-specs" value="${escape(a.specifications || '')}" placeholder="i5 / 16GB / 512GB SSD" /></div>
         <div class="field"><label>Purchase date</label><input id="as-pdate" type="date" value="${a.purchase_date || ''}" /></div>
         <div class="field"><label>Warranty expiry</label><input id="as-warr" type="date" value="${a.warranty_expiry || ''}" /></div>
-        <div class="field"><label>Current owner</label>
-          <select id="as-owner">
-            <option value="">— unassigned —</option>
-            ${users.map(u => `<option value="${u.id}" ${a.current_owner_id===u.id?'selected':''}>${escape(u.full_name)}</option>`).join('')}
+
+        <!-- Smart owner search — searches all FFC employees + IT portal users -->
+        <div class="field" style="grid-column:1/-1">
+          <label>Assigned to (owner)</label>
+          <div style="position:relative">
+            <input id="as-owner-search"
+              placeholder="Type name, email or department to search all FFC staff…"
+              value="${escape(currentOwnerName)}"
+              autocomplete="off"
+              style="width:100%;padding:10px 13px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:var(--card);color:var(--ink)" />
+            <input type="hidden" id="as-owner-key" value="${escape(currentOwnerKey)}" />
+            <input type="hidden" id="as-owner-source" value="${escape(a.owner_source || 'profile')}" />
+            <input type="hidden" id="as-owner-name" value="${escape(currentOwnerName)}" />
+            <div id="as-owner-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;background:var(--card);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:1000;max-height:220px;overflow-y:auto;margin-top:2px"></div>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">
+            Searches all FFC employees (${owners.length} total) · Or type a free-form name for someone not in the system
+          </div>
+        </div>
+
+        <div class="field"><label>Department</label><input id="as-dept" value="${escape(a.owner_department || '')}" placeholder="Auto-filled from employee record" /></div>
+        <div class="field"><label>Site / Location</label>
+          <select id="as-site">
+            <option value="">— select site —</option>
+            ${['Head Office','TFM','Market Shop','VS','Other'].map(s => `<option value="${s}" ${(a.owner_site||a.current_location)===s?'selected':''}>${s}</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>Current location</label><input id="as-loc" value="${escape(a.current_location || '')}" /></div>
         <div class="field"><label>Condition</label>
           <select id="as-cond">
             ${['new','good','fair','damaged','lost','retired'].map(c => `<option value="${c}" ${a.current_condition===c?'selected':''}>${c}</option>`).join('')}
@@ -4035,10 +4063,81 @@ async function openAssetEditor(assetId) {
     </div>` : ''}
   `;
 
+  // Wire smart owner search
+  const searchInput = document.getElementById('as-owner-search');
+  const dropdown = document.getElementById('as-owner-dropdown');
+  const ownerKey = document.getElementById('as-owner-key');
+  const ownerSource = document.getElementById('as-owner-source');
+  const ownerNameHidden = document.getElementById('as-owner-name');
+
+  const renderDropdown = (query) => {
+    const q = query.toLowerCase().trim();
+    if (!q) { dropdown.style.display = 'none'; return; }
+
+    const matches = owners.filter(o =>
+      o.full_name?.toLowerCase().includes(q) ||
+      o.email?.toLowerCase().includes(q) ||
+      o.department?.toLowerCase().includes(q) ||
+      o.site?.toLowerCase().includes(q)
+    ).slice(0, 15);
+
+    if (!matches.length) {
+      dropdown.innerHTML = `
+        <div style="padding:10px 14px;font-size:12.5px;color:var(--muted)">
+          No match — will save as free-text name
+        </div>`;
+      dropdown.style.display = 'block';
+      ownerKey.value = '';
+      ownerSource.value = 'freetext';
+      ownerNameHidden.value = query;
+      return;
+    }
+
+    dropdown.innerHTML = matches.map(o => `
+      <div data-key="${o.owner_key}" data-source="${o.source}" data-name="${escape(o.full_name)}"
+        data-dept="${escape(o.department||'')}" data-site="${escape(o.site||'')}"
+        style="padding:8px 14px;cursor:pointer;border-bottom:0.5px solid var(--line);font-size:12.5px"
+        onmouseover="this.style.background='var(--green-50)'"
+        onmouseout="this.style.background=''">
+        <div style="font-weight:500;color:var(--ink)">${escape(o.full_name)}</div>
+        <div style="font-size:11px;color:var(--muted)">
+          ${o.email ? escape(o.email) + ' · ' : ''}${o.department ? escape(o.department) + ' · ' : ''}${o.site ? escape(o.site) : ''}
+          <span style="color:${o.source==='profile'?'var(--green-700)':'var(--muted)'}">
+            ${o.source === 'profile' ? '· IT Portal user' : ''}
+          </span>
+        </div>
+      </div>
+    `).join('');
+    dropdown.style.display = 'block';
+
+    // Wire dropdown item clicks
+    dropdown.querySelectorAll('[data-key]').forEach(item => {
+      item.addEventListener('click', () => {
+        searchInput.value = item.dataset.name;
+        ownerKey.value = item.dataset.key;
+        ownerSource.value = item.dataset.source;
+        ownerNameHidden.value = item.dataset.name;
+        // Auto-fill dept and site
+        if (item.dataset.dept) document.getElementById('as-dept').value = item.dataset.dept;
+        if (item.dataset.site) document.getElementById('as-site').value = item.dataset.site;
+        dropdown.style.display = 'none';
+      });
+    });
+  };
+
+  searchInput.addEventListener('input', e => renderDropdown(e.target.value));
+  searchInput.addEventListener('focus', () => { if (searchInput.value) renderDropdown(searchInput.value); });
+  document.addEventListener('click', e => { if (!e.target.closest('#as-owner-search') && !e.target.closest('#as-owner-dropdown')) dropdown.style.display = 'none'; });
+
   if (canWrite) {
     $('#as-save').addEventListener('click', async () => {
       const get = (id) => document.getElementById(id)?.value?.trim() || '';
       if (!get('as-tag') || !get('as-type')) { toast('Tag and type required', 'error'); return; }
+
+      const ownerKeyVal = get('as-owner-key');
+      const ownerSrcVal = get('as-owner-source');
+      const ownerNameVal = get('as-owner-name') || get('as-owner-search');
+
       const payload = {
         asset_tag: get('as-tag'),
         serial_number: get('as-sn') || null,
@@ -4048,40 +4147,42 @@ async function openAssetEditor(assetId) {
         specifications: get('as-specs') || null,
         purchase_date: get('as-pdate') || null,
         warranty_expiry: get('as-warr') || null,
-        current_owner_id: get('as-owner') || null,
-        current_location: get('as-loc') || null,
         current_condition: get('as-cond') || 'good',
-        accessories: get('as-acc') ? get('as-acc').split(',').map(s=>s.trim()).filter(Boolean) : null
+        owner_department: get('as-dept') || null,
+        owner_site: get('as-site') || null,
+        current_location: get('as-site') || null,
+        accessories: get('as-acc') ? get('as-acc').split(',').map(s=>s.trim()).filter(Boolean) : null,
+        // Portal user (IT team)
+        current_owner_id: (ownerSrcVal === 'profile' && ownerKeyVal) ? ownerKeyVal : null,
+        // Non-portal FFC employee
+        owner_name: ownerNameVal || null,
+        owner_email: ownerSrcVal === 'employee' ?
+          owners.find(o => o.owner_key === ownerKeyVal)?.email || null : null,
+        is_retired: false
       };
+
+      const btn = $('#as-save');
+      btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Saving…';
+
       let err;
       if (assetId) {
         ({ error: err } = await sb.from('assets').update(payload).eq('id', assetId));
       } else {
         const { error: insertErr, data: inserted } = await sb.from('assets').insert(payload).select().single();
         err = insertErr;
-        if (!insertErr && !inserted) {
-          err = { message: 'Insert returned no data — possible RLS policy blocking. Run 16_combined_fix.sql.' };
-        }
+        if (!insertErr && !inserted) err = { message: 'Insert returned no data — check RLS policy.' };
       }
-      if (err) {
-        console.error('Asset save error:', err);
-        toast(`Save failed: ${err.message}`, 'error', 8000);
-        return;
-      }
-      toast(assetId ? 'Asset updated' : 'Asset created ✓', 'success');
+      if (err) { console.error('Asset save error:', err); toast(`Save failed: ${err.message}`, 'error', 8000); btn.disabled = false; btn.innerHTML = assetId ? 'Save' : 'Create asset'; return; }
+      toast(assetId ? 'Asset updated ✓' : 'Asset created ✓', 'success');
       closeDrawer();
       route('assets-registry');
     });
 
-    const retireBtn = $('#as-retire');
-    if (retireBtn) {
-      retireBtn.addEventListener('click', async () => {
-        const { error } = await sb.from('assets').update({
-          is_retired: !a.is_retired,
-          retired_on: a.is_retired ? null : new Date().toISOString().slice(0,10)
-        }).eq('id', assetId);
+    if (assetId && $('#as-retire')) {
+      $('#as-retire').addEventListener('click', async () => {
+        const { error } = await sb.from('assets').update({ is_retired: !a.is_retired }).eq('id', assetId);
         if (error) { toast(error.message, 'error'); return; }
-        toast(a.is_retired ? 'Asset reactivated' : 'Asset retired', 'success');
+        toast(a.is_retired ? 'Asset un-retired' : 'Asset retired', 'success');
         closeDrawer();
         route('assets-registry');
       });
@@ -4089,6 +4190,8 @@ async function openAssetEditor(assetId) {
   }
 }
 
+  $('#drawerBg').classList.add('show');
+  $('#drawerTitle').textContent = assetId ? `Asset ${a.asset_tag || ''}` : 'New Asset';
 // ---------------- LICENSE TRACKER ----------------
 async function renderLicenses() {
   const canWrite = isAdmin() || hasRole('it_manager') || hasRole('sysadmin') || hasRole('finance');
@@ -6000,18 +6103,19 @@ const CSV_TEMPLATES = {
     columns: [
       'asset_tag','serial_number','asset_type','brand','model',
       'specifications','purchase_date','purchase_cost','currency',
-      'warranty_expiry','current_owner_email','current_location',
-      'current_condition','is_retired','notes'
+      'warranty_expiry','current_owner_email','owner_name',
+      'owner_department','owner_site','current_condition','is_retired','notes'
     ],
     required: ['asset_tag','asset_type'],
     enums: {
       asset_type: ['laptop','desktop','monitor','phone','tablet','printer','scanner','network_device','server','ups','docking_station','headset','keyboard_mouse','accessory','sim_card','other'],
       current_condition: ['new','good','fair','damaged','lost','retired'],
+      owner_site: ['Head Office','TFM','Market Shop','VS','Other'],
       is_retired: ['true','false']
     },
     sample: [
-      'FFC-LPT-001,SN123456789,laptop,Dell,Latitude 5540,Intel i7 16GB 512GB SSD,2024-03-15,4500,AED,2027-03-15,satham@freshfruitscompany.com,Head Office,good,false,Primary work laptop',
-      'FFC-SRV-001,SRV987654321,server,HP,ProLiant DL380 G10,Xeon 64GB 2x1TB RAID,2023-01-10,25000,AED,2026-01-10,,Server Room,good,false,Primary Hyper-V host'
+      'FFC-LPT-001,SN123456789,laptop,Dell,Latitude 5540,Intel i7 16GB 512GB SSD,2024-03-15,4500,AED,2027-03-15,satham@freshfruitscompany.com,,IT,Head Office,good,false,Primary work laptop',
+      'FFC-LPT-002,SN987654321,laptop,HP,EliteBook 840,,2023-06-01,3800,AED,2026-06-01,,Ahmed Al-Mansouri,Finance,Head Office,good,false,Finance department laptop'
     ]
   },
 
@@ -6342,7 +6446,7 @@ async function importCSVRows(type, rows) {
   }
 
   else if (type === 'asset') {
-    // Resolve owner emails to user IDs
+    // Resolve owner emails to user IDs (for IT portal users)
     const emails = [...new Set(rows.map(r => r.current_owner_email).filter(Boolean))];
     let emailMap = {};
     if (emails.length > 0) {
@@ -6362,8 +6466,13 @@ async function importCSVRows(type, rows) {
       purchase_cost: r.purchase_cost ? parseFloat(r.purchase_cost) : null,
       currency: r.currency || 'AED',
       warranty_expiry: r.warranty_expiry || null,
+      // Portal user (IT team) — resolved by email
       current_owner_id: r.current_owner_email ? (emailMap[r.current_owner_email] || null) : null,
-      current_location: r.current_location || null,
+      // Non-portal FFC employee — stored as text
+      owner_name: r.owner_name || null,
+      owner_department: r.owner_department || null,
+      owner_site: r.owner_site || null,
+      current_location: r.owner_site || null,
       current_condition: r.current_condition || 'good',
       is_retired: r.is_retired === 'true'
     }));
