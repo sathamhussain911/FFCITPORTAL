@@ -4190,8 +4190,6 @@ async function openAssetEditor(assetId) {
   }
 }
 
-  $('#drawerBg').classList.add('show');
-  $('#drawerTitle').textContent = assetId ? `Asset ${a.asset_tag || ''}` : 'New Asset';
 // ---------------- LICENSE TRACKER ----------------
 async function renderLicenses() {
   const canWrite = isAdmin() || hasRole('it_manager') || hasRole('sysadmin') || hasRole('finance');
